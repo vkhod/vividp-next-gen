@@ -1,0 +1,104 @@
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL ────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: fs_postgres
+    environment:
+      POSTGRES_DB: formstorm
+      POSTGRES_USER: formstorm
+      POSTGRES_PASSWORD: formstorm_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Auto-runs migrations alphabetically on first start:
+      #   001_settings.sql  → tenants, systems, station_configs, document_types, ...
+      #   002_jobs.sql      → jobs, job_documents, job_pages, job_fields, ...
+      - ./db/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U formstorm" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── NATS JetStream ────────────────────────────────────────
+  nats:
+    image: nats:2.10-alpine
+    container_name: fs_nats
+    # -js = enable JetStream, -sd = storage directory
+    command: "-js -sd /data -m 8222"
+    ports:
+      - "4222:4222" # client connections
+      - "8222:8222" # HTTP monitoring UI  → http://localhost:8222
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q --spider http://localhost:8222/healthz || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── MinIO (S3-compatible object store) ────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: fs_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: formstorm
+      MINIO_ROOT_PASSWORD: formstorm_dev
+      # ── NATS bucket notifications ────────────────────────
+      # MinIO publishes ObjectCreated events to NATS natively.
+      # The injection service subscribes to these subjects.
+      MINIO_NOTIFY_NATS_ENABLE_PRIMARY: "on"
+      MINIO_NOTIFY_NATS_ADDRESS_PRIMARY: "nats:4222"
+      MINIO_NOTIFY_NATS_SUBJECT_PRIMARY: "formstorm.minio.events"
+      MINIO_NOTIFY_NATS_JETSTREAM_PRIMARY: "on"
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # Web console → http://localhost:9001
+    volumes:
+      - minio_data:/data
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:9000/minio/health/live" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── MinIO bucket + notification setup (runs once, then exits)
+  minio_setup:
+    image: minio/mc:latest
+    container_name: fs_minio_setup
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 formstorm formstorm_dev &&
+
+        mc mb --ignore-existing local/input &&
+        mc mb --ignore-existing local/jobs &&
+        mc mb --ignore-existing local/templates &&
+        mc mb --ignore-existing local/archive &&
+
+        mc event add local/input arn:minio:sqs::PRIMARY:nats \
+          --event put \
+          --suffix '.pdf,.tif,.tiff,.png,.jpg,.jpeg' &&
+
+        echo 'Buckets: input, jobs, templates, archive' &&
+        echo 'Notifications: input → NATS (ObjectCreated)' &&
+        exit 0
+      "
+
+volumes:
+  postgres_data:
+  nats_data:
+  minio_data:
