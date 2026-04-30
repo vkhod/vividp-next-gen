@@ -13,10 +13,10 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"formstorm/ingestion"
-	"formstorm/job"
-	"formstorm/license"
-	"formstorm/logger"
+	"vividp/ingestion"
+	"vividp/job"
+	"vividp/license"
+	"vividp/logger"
 )
 
 func main() {
@@ -151,7 +151,7 @@ func main() {
 
 	fmt.Println()
 	fmt.Println("═══════════════════════════════════════════════════")
-	fmt.Println("FormStorm Ingestion Service running")
+	fmt.Println("VividP Ingestion Service running")
 	fmt.Printf("  Webhook:    http://localhost:%s/webhook\n", cfg.WebhookPort)
 	fmt.Printf("  Health:     http://localhost:%s/healthz\n", cfg.WebhookPort)
 	fmt.Printf("  Workers:    %d\n", cfg.WorkerCount)
@@ -186,7 +186,7 @@ func main() {
 //   go mod tidy                   (downloads all dependencies)
 //
 // Configure MinIO webhook (one-time setup):
-//   1. Open http://localhost:9001 (formstorm / formstorm_dev)
+//   1. Open http://localhost:9001 (vividp / vividp_dev)
 //   2. Go to Buckets → input → Events
 //   3. Add event: POST http://host.docker.internal:8080/webhook
 //      Events: PUT (ObjectCreated)

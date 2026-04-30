@@ -1,4 +1,4 @@
-# FormStorm Next Gen — Schema Design Narrative
+# VividP — Schema Design Narrative
 
 > This document explains the schema in terms of *what* each table models and *why*
 > it is designed the way it is. For the DDL, see `db/migrations/001_jobs.sql`.
@@ -10,10 +10,10 @@
 
 The schema was derived from three sources:
 
-1. **A real FormStorm 1.0 job XML file** — revealed the actual field structure,
+1. **A real legacy job XML file** — revealed the actual field structure,
    five value layers per field, two bounding box systems, and phase timestamps.
 
-2. **`fsjob_json.pas` Delphi source** — the unit used to serialize FormStorm 1.0
+2. **`fsjob_json.pas` Delphi source** — the legacy Delphi unit used to serialize
    jobs to JSON. Revealed: `system_id`, `job_name` vs `job_alias` distinction,
    `skipped_verify`/`skipped_trutypist` flags, `operator_rotation` (VerifyRotate),
    `setup_table`, `field_order`/`is_visible`/`is_readonly`, `error_comment`,
@@ -31,7 +31,7 @@ detected until it is archived after export.
 
 ### Why so many columns?
 
-FormStorm jobs carry a lot of lifecycle metadata that doesn't fit neatly into
+Legacy jobs carry a lot of lifecycle metadata that doesn't fit neatly into
 "just a state machine." The schema reflects the reality of production IDP:
 
 - **Six phase timestamps** (`capture_began_at` through `verification_ended_at`)
@@ -55,8 +55,8 @@ FormStorm jobs carry a lot of lifecycle metadata that doesn't fit neatly into
 
 ```
 classifications[]     Ranked document type candidates. Array supports multiple
-                      candidates — jcn1/jct1/jcc1 through jcnN pattern from
-                      FormStorm 1.0. Rank 1 is the winner.
+                      candidates — jcn1/jct1/jcc1 through jcnN pattern.
+                      Rank 1 is the winner.
 
 job_state{}           The pipeline accumulator. Every station merges its output
                       here using PostgreSQL || operator. Never replaced, only grown.
@@ -76,17 +76,12 @@ pipeline_timings{}    Per-station duration in milliseconds, recorded at each
                       Example: {"ingest":420,"classify":850,"match":210}
 ```
 
-### Legacy columns (migration helpers only)
-
-`legacy_job_id` — the FormStorm 1.0 numeric job ID (e.g. "3020251104082502").
-`fs_uid`, `fs_status`, `fs_state` — internal FormStorm 1.0 identifiers.
-All nullable. Populated only for imported 1.0 jobs. Drop after 1.0 decommission.
 
 ---
 
 ## Table: job_documents
 
-Models the logical structure of a batch job. FormStorm 1.0 encoded document
+Models the logical structure of a batch job. The legacy system encoded document
 boundaries as boolean flags on individual pages (`rpginfo.end_doc`). This
 required scanning all page flags to understand the batch topology.
 
@@ -139,7 +134,7 @@ Scan/preprocessing rotation goes in `preprocessing{}` JSONB:
 
 `fsa_form`, `fsa_original_page_no`, `fsa_original_template`, `fsa_original_state`
 preserve the state of the page before any post-processing changes. These are the
-FormStorm Archive originals — needed for audit trails.
+legacy archive originals — needed for audit trails.
 
 ### JSONB columns on job_pages
 
@@ -278,7 +273,7 @@ for operator review and model retraining signal.
 ## Pending: 002_systems.sql
 
 `jobs.system_id` is currently a TEXT column (no FK constraint). The System
-Registry table is the next migration to write. A FormStorm System is the
+Registry table is the next migration to write. A legacy System is the
 XML/binary configuration entity that defines:
 - Which forms and templates are available
 - Field definitions, types, validation rules per field
@@ -290,7 +285,7 @@ Every job belongs to exactly one System. The system_id FK is the link that
 tells the pipeline which form definitions, templates, and rules to apply.
 
 Two System types:
-- **Legacy** — wraps an existing FormStorm 1.0 XML/binary configuration
+- **Legacy** — wraps an existing legacy XML/binary configuration
   (used during the Strangler Fig migration period)
 - **Native** — a first-class 2.0 system definition stored in the registry
 

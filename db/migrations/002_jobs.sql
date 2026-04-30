@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════════
--- FormStorm Next Gen — Full Schema v4
+-- VividP — Full Schema v4
 -- Sources: real job XML analysis + fsjob_json.pas Delphi + architectural design
 -- ═══════════════════════════════════════════════════════════════════════════════
 
@@ -11,8 +11,6 @@ CREATE TABLE IF NOT EXISTS jobs (
 
     -- ── Identity ──────────────────────────────────────────────────────────────
     id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    legacy_job_id       TEXT        UNIQUE,         -- FormStorm 1.0 job_id e.g. "3020251104082502"
-    fs_uid              TEXT,                       -- ARJob.uid from Delphi (migration helper)
     tenant_id           UUID        NOT NULL REFERENCES tenants(id),
     system_id           UUID        NOT NULL REFERENCES systems(id),
     
@@ -23,8 +21,6 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- ── State machine ─────────────────────────────────────────────────────────
     status              TEXT        NOT NULL DEFAULT 'DETECTED',
     stage               TEXT        NOT NULL DEFAULT 'INGESTION',
-    fs_status           INT,        -- legacy FormStorm numeric status (migration helper)
-    fs_state            INT,        -- legacy FormStorm numeric state  (migration helper)
 
     -- ── Capture metadata ──────────────────────────────────────────────────────
     capture_type        INT,
@@ -64,7 +60,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     tif_file_key        TEXT,       -- MinIO key for primary TIF
     tif_reg_file_key    TEXT,       -- MinIO key for registered/processed TIF
 
-    -- ── Verifier metrics (v_name, v_time, nksv from FormStorm 1.0 XML) ───────
+    -- ── Verifier metrics (v_name, v_time, nksv from legacy XML) ───────
     verifier_name           TEXT,
     verification_seconds    INT,
     keystrokes_count        INT,
@@ -118,7 +114,6 @@ CREATE TABLE IF NOT EXISTS jobs (
 -- ─────────────────────────────────────────────────────────────────────────────
 -- TABLE: job_documents
 -- Logical document grouping within a batch job.
--- REPLACES rpginfo end_doc/end_bundle boolean flags from FormStorm 1.0.
 -- A batch of 3 invoices = 3 rows here. Pages belong via document_id FK.
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS job_documents (
@@ -167,7 +162,6 @@ CREATE TABLE IF NOT EXISTS job_pages (
 
     -- ── State ─────────────────────────────────────────────────────────────────
     state                   TEXT,
-    fs_pstate               INT,        -- legacy FormStorm integer state code (migration helper)
     is_deleted              BOOLEAN     NOT NULL DEFAULT FALSE,
 
     -- ── Page role in batch ────────────────────────────────────────────────────
@@ -249,7 +243,6 @@ CREATE TABLE IF NOT EXISTS job_fields (
     page_id         BIGINT      REFERENCES job_pages(id) ON DELETE CASCADE, -- NULL for job-level fields
 
     -- ── Field identity ────────────────────────────────────────────────────────
-    fs_uid          TEXT,       -- ARField.uid from Delphi (migration helper)
     field_name      TEXT        NOT NULL,
     array_index     INT,        -- 1-based row for repeating fields; NULL for non-repeating
     -- Line-item table grouping: ARField.SetupField.SetupTable.Name
@@ -396,10 +389,6 @@ CREATE INDEX idx_jobs_claimed
 
 CREATE INDEX idx_jobs_status_updated
     ON jobs (status, updated_at);
-
-CREATE INDEX idx_jobs_legacy
-    ON jobs (legacy_job_id)
-    WHERE legacy_job_id IS NOT NULL;
 
 CREATE INDEX idx_jobs_verifier
     ON jobs (verifier_name)

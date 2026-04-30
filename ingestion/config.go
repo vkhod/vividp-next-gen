@@ -24,7 +24,7 @@ type Config struct {
 	JobsBucket       string
 
 	// Service identity
-	DefaultSystemID  string // UUID of the FormStorm System to assign new jobs
+	DefaultSystemID  string // UUID of the VividP System to assign new jobs
 	DefaultTenantID  string // UUID fallback tenant if not extractable from key
 
 	// HTTP server
@@ -42,16 +42,16 @@ type Config struct {
 
 func LoadConfig() Config {
 	return Config{
-		DatabaseURL:      getenv("DATABASE_URL",      "postgres://formstorm:formstorm_dev@localhost:5432/formstorm"),
+		DatabaseURL:      getenv("DATABASE_URL",      "postgres://vividp:vividp_dev@localhost:5432/vividp"),
 		NatsURL:          getenv("NATS_URL",           "nats://localhost:4222"),
 		StorageEndpoint:  getenv("STORAGE_ENDPOINT",  "localhost:9000"),
-		StorageAccessKey: getenv("STORAGE_ACCESS_KEY","formstorm"),
-		StorageSecretKey: getenv("STORAGE_SECRET_KEY","formstorm_dev"),
+		StorageAccessKey: getenv("STORAGE_ACCESS_KEY","vividp"),
+		StorageSecretKey: getenv("STORAGE_SECRET_KEY","vividp_dev"),
 		StorageSecure:    getenv("STORAGE_SECURE",    "false") == "true",
 		InputBucket:      getenv("INPUT_BUCKET",      "input"),
 		JobsBucket:       getenv("JOBS_BUCKET",       "jobs"),
-		DefaultSystemID:  getenv("FS_DEFAULT_SYSTEM_ID",  "00000000-0000-0000-0000-000000000002"),
-		DefaultTenantID:  getenv("FS_DEFAULT_TENANT_ID",  "00000000-0000-0000-0000-000000000001"),
+		DefaultSystemID:  getenv("VIVIDP_DEFAULT_SYSTEM_ID",  "00000000-0000-0000-0000-000000000002"),
+		DefaultTenantID:  getenv("VIVIDP_DEFAULT_TENANT_ID",  "00000000-0000-0000-0000-000000000001"),
 		WebhookPort:      getenv("WEBHOOK_PORT",       "8080"),
 		WebhookSecret:    getenv("WEBHOOK_SECRET",     ""),
 		WorkerCount:   2, // increase for production

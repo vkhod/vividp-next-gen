@@ -86,7 +86,7 @@ func NextWorkSubject(s Status) (string, bool) {
 type StateData map[string]any
 
 // Classification is one ranked document type candidate.
-// Maps to jcn1/jct1/jcc1 pattern from FormStorm 1.0 XML.
+// Maps to jcn1/jct1/jcc1 pattern from legacy XML.
 type Classification struct {
 	Rank       int    `json:"rank"`
 	Name       string `json:"name"`
@@ -110,10 +110,8 @@ type Artifact struct {
 // Pointer types (*string, *int, *time.Time) map to nullable PostgreSQL columns.
 type Job struct {
 	// Identity
-	ID          string  `json:"id"`
-	LegacyJobID *string `json:"legacy_job_id,omitempty"` // FormStorm 1.0 job_id
-	FsUID       *string `json:"fs_uid,omitempty"`        // ARJob.uid from Delphi
-	TenantID    string  `json:"tenant_id"`
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
 	SystemID    string  `json:"system_id"` // FK → systems table
 
 	// Naming (two distinct concepts from Delphi)
@@ -121,10 +119,8 @@ type Job struct {
 	JobAlias *string `json:"job_alias,omitempty"` // ARJob.JobName — display name
 
 	// State machine
-	Status   Status `json:"status"`
-	Stage    string `json:"stage"`
-	FsStatus *int   `json:"fs_status,omitempty"` // legacy numeric status
-	FsState  *int   `json:"fs_state,omitempty"`  // legacy numeric state
+	Status Status `json:"status"`
+	Stage  string `json:"stage"`
 
 	// Capture
 	CaptureType      *int `json:"capture_type,omitempty"`
@@ -235,7 +231,6 @@ type Page struct {
 
 	// State
 	State     *string `json:"state,omitempty"`
-	FsPState  *int    `json:"fs_pstate,omitempty"` // legacy integer state code
 	IsDeleted bool    `json:"is_deleted"`
 
 	// Page role in batch
@@ -294,10 +289,9 @@ type Page struct {
 // fast Verification Workstation queries.
 // Engine details and geometry live in JSONB.
 type Field struct {
-	ID         int64   `json:"id"`
-	JobID      string  `json:"job_id"`
-	PageID     *int64  `json:"page_id,omitempty"` // NULL for job-level (rjobpage) fields
-	FsUID      *string `json:"fs_uid,omitempty"`  // ARField.uid from Delphi
+	ID         int64  `json:"id"`
+	JobID      string `json:"job_id"`
+	PageID     *int64 `json:"page_id,omitempty"` // NULL for job-level (rjobpage) fields
 
 	FieldName  string  `json:"field_name"`
 	ArrayIndex *int    `json:"array_index,omitempty"` // 1-based for repeating fields (line items)

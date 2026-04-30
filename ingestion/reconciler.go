@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"path/filepath"
 
-	"formstorm/job"
+	"vividp/job"
 	"github.com/minio/minio-go/v7"
 )
 
@@ -65,7 +65,10 @@ func (r *Reconciler) Run(ctx context.Context, workCh chan<- DetectedFile) int {
 		key := obj.Key
 		prefix := folderPrefix(key)
 
-		if isSignalFile(key) && prefix != "" {
+		if isSignalFile(key) {
+			if prefix == "" {
+				continue // root-level signal with no folder context — skip
+			}
 			fe := folders[prefix]
 			if fe == nil {
 				fe = &folderEntry{}

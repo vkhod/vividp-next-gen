@@ -1,15 +1,13 @@
-version: "3.9"
-
 services:
 
   # ── PostgreSQL ────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
-    container_name: fs_postgres
+    container_name: vividp_postgres
     environment:
-      POSTGRES_DB: formstorm
-      POSTGRES_USER: formstorm
-      POSTGRES_PASSWORD: formstorm_dev
+      POSTGRES_DB: vividp
+      POSTGRES_USER: vividp
+      POSTGRES_PASSWORD: vividp_dev
     ports:
       - "5432:5432"
     volumes:
@@ -19,7 +17,7 @@ services:
       #   002_jobs.sql      → jobs, job_documents, job_pages, job_fields, ...
       - ./db/migrations:/docker-entrypoint-initdb.d
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U formstorm" ]
+      test: [ "CMD-SHELL", "pg_isready -U vividp" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -28,7 +26,7 @@ services:
   # ── NATS JetStream ────────────────────────────────────────
   nats:
     image: nats:2.10-alpine
-    container_name: fs_nats
+    container_name: vividp_nats
     # -js = enable JetStream, -sd = storage directory
     command: "-js -sd /data -m 8222"
     ports:
@@ -46,17 +44,17 @@ services:
   # ── MinIO (S3-compatible object store) ────────────────────
   minio:
     image: minio/minio:latest
-    container_name: fs_minio
+    container_name: vividp_minio
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: formstorm
-      MINIO_ROOT_PASSWORD: formstorm_dev
+      MINIO_ROOT_USER: vividp
+      MINIO_ROOT_PASSWORD: vividp_dev
       # ── NATS bucket notifications ────────────────────────
       # MinIO publishes ObjectCreated events to NATS natively.
       # The injection service subscribes to these subjects.
       MINIO_NOTIFY_NATS_ENABLE_PRIMARY: "on"
       MINIO_NOTIFY_NATS_ADDRESS_PRIMARY: "nats:4222"
-      MINIO_NOTIFY_NATS_SUBJECT_PRIMARY: "formstorm.minio.events"
+      MINIO_NOTIFY_NATS_SUBJECT_PRIMARY: "vividp.minio.events"
       MINIO_NOTIFY_NATS_JETSTREAM_PRIMARY: "on"
     ports:
       - "9000:9000" # S3 API
@@ -76,13 +74,13 @@ services:
   # ── MinIO bucket + notification setup (runs once, then exits)
   minio_setup:
     image: minio/mc:latest
-    container_name: fs_minio_setup
+    container_name: vividp_minio_setup
     depends_on:
       minio:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-        mc alias set local http://minio:9000 formstorm formstorm_dev &&
+        mc alias set local http://minio:9000 vividp vividp_dev &&
 
         mc mb --ignore-existing local/input &&
         mc mb --ignore-existing local/jobs &&

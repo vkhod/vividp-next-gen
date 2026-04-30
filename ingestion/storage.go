@@ -15,7 +15,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
-// Storage wraps the MinIO client with FormStorm-specific operations.
+// Storage wraps the MinIO client with VividP-specific operations.
 type Storage struct {
 	client     *minio.Client
 	jobsBucket string // destination for processed artifacts

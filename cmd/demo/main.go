@@ -21,14 +21,14 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"formstorm/job"
+	"vividp/job"
 )
 
 func main() {
 	ctx := context.Background()
 
 	// ── Connect ──────────────────────────────────────────────────────────────
-	dbURL := getenv("DATABASE_URL", "postgres://formstorm:formstorm_dev@localhost:5432/formstorm")
+	dbURL := getenv("DATABASE_URL", "postgres://vividp:vividp_dev@localhost:5432/vividp")
 	db, err := pgxpool.New(ctx, dbURL)
 	must("connect postgres", err)
 	must("ping postgres", db.Ping(ctx))
@@ -51,9 +51,9 @@ func main() {
 
 	// ── Subscribe to all events so we can watch them fire ────────────────────
 	js, _ := jetstream.New(nc)
-	consumer, err := js.CreateOrUpdateConsumer(ctx, "FORMSTORM_JOBS", jetstream.ConsumerConfig{
+	consumer, err := js.CreateOrUpdateConsumer(ctx, "VIVIDP_JOBS", jetstream.ConsumerConfig{
 		Name:          "demo-watcher",
-		FilterSubject: "formstorm.jobs.events.>",
+		FilterSubject: "vividp.jobs.events.>",
 		DeliverPolicy: jetstream.DeliverNewPolicy,
 		AckPolicy:     jetstream.AckNonePolicy,
 	})
@@ -63,7 +63,7 @@ func main() {
 		var event job.Event
 		json.Unmarshal(msg.Data(), &event)
 		fmt.Printf("   📡 NATS %-26s  job=%.8s  tenant=%s\n",
-			"formstorm.jobs.events."+string(event.Status),
+			"vividp.jobs.events."+string(event.Status),
 			event.JobID, event.TenantID)
 	})
 
@@ -177,12 +177,12 @@ func main() {
 	fmt.Println("Explore the results:")
 	fmt.Println()
 	fmt.Println("  PostgreSQL:")
-	fmt.Println("    psql postgres://formstorm:formstorm_dev@localhost:5432/formstorm")
+	fmt.Println("    psql postgres://vividp:vividp_dev@localhost:5432/vividp")
 	fmt.Println("    SELECT id, status, source_filename, page_count FROM jobs;")
 	fmt.Println("    SELECT from_status, to_status, worker_id FROM job_transitions ORDER BY occurred_at;")
 	fmt.Println()
 	fmt.Println("  NATS monitor:  http://localhost:8222/jsz?streams=1&consumers=1")
-	fmt.Println("  MinIO console: http://localhost:9001  (formstorm / formstorm_dev)")
+	fmt.Println("  MinIO console: http://localhost:9001  (vividp / vividp_dev)")
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

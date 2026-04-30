@@ -1,9 +1,9 @@
-# FormStorm Next Gen — Architectural Decision Log
+# VividP — Architectural Decision Log
 
 > This document records **why** we made specific design choices.
 > Before proposing a change to any of the areas below, read the relevant
 > section to understand the reasoning. Many of these decisions replaced
-> something that existed in FormStorm 1.0.
+> something that existed in the legacy system.
 
 ---
 
@@ -12,7 +12,7 @@
 **Decision:** Insert the job row into PostgreSQL the moment a file is detected
 by the webhook handler — before downloading, before conversion, before anything.
 
-**Why:** FormStorm 1.0 had no concept of a job until the queue folder was fully
+**Why:** The legacy system had no concept of a job until the queue folder was fully
 created. If anything failed during ingestion, the job simply disappeared with no
 trace. There was no way to know a file had been detected and lost.
 
@@ -44,7 +44,7 @@ trace. There was no way to know a file had been detected and lost.
 
 ## ADR-003: rpginfo replaced by job_documents + fractional page ordering
 
-**Decision:** Replace FormStorm 1.0's `rpginfo` boolean flags
+**Decision:** Replace the legacy `rpginfo` boolean flags
 (`end_doc`, `end_bundle`, `sep`, `org_end_doc`, etc.) with:
 1. An explicit `job_documents` table for document grouping
 2. `order_key FLOAT8` on `job_pages` for page ordering
@@ -84,7 +84,7 @@ trace. There was no way to know a file had been detected and lost.
 | `recognition.llm.normalized` | Post-processed LLM | After normalization |
 | `final_value` (relational) | Accepted value | typist_content — what was exported |
 
-**Why:** Discovered by analyzing a real FormStorm 1.0 job XML. Example:
+**Why:** Discovered by analyzing a real legacy job XML. Example:
 ```
 org_ocr="31/10/25"        ← OCR saw this
 ocr_content="20251031"    ← normalized to this
@@ -209,7 +209,7 @@ Only the endpoint URL changes between deployment tiers.
 **Why:**
 - Single ~20MB Go binary — runs on the same host as everything else for small on-prem
 - No JVM, no ZooKeeper, no external coordination service
-- Kafka is 30× heavier operationally for no meaningful benefit at FormStorm's scale
+- Kafka is 30× heavier operationally for no meaningful benefit at this scale
 - NATS has equivalent durability (file-backed streams, Raft consensus for clustering)
 - Built-in dead-letter via MaxDeliver + consumer groups distribute work automatically
 - Microsecond latency vs Kafka's low-millisecond
@@ -256,9 +256,9 @@ one language." Every switch must be justified by the problem characteristics.
 
 ---
 
-## ADR-012: Strangler Fig migration from FormStorm 1.0
+## ADR-012: Strangler Fig migration from the legacy platform
 
-**Decision:** FormStorm 1.0 continues running alongside 2.0 during migration.
+**Decision:** The legacy system continues running alongside 2.0 during migration.
 New modules are introduced progressively, not in a big-bang cutover.
 
 **Phases:**
@@ -272,6 +272,3 @@ New modules are introduced progressively, not in a big-bang cutover.
 thin REST adapter (Go service). The Recognition Hub calls them via HTTP.
 This preserves recognition accuracy during transition while decoupling the architecture.
 
-**fs_* columns:** `fs_uid`, `fs_status`, `fs_state`, `fs_pstate` exist in the schema
-solely for cross-referencing 1.0 data during the migration period.
-They are nullable. Drop them after 1.0 decommission.

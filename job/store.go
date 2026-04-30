@@ -334,22 +334,22 @@ func (s *Store) CreateField(ctx context.Context, f *Field) error {
 	return s.db.QueryRow(ctx, `
 		INSERT INTO job_fields (
 			job_id, page_id,
-			fs_uid, field_name, array_index, setup_table,
+			field_name, array_index, setup_table,
 			is_job_level,
 			final_value, field_state, value_source, confidence,
 			field_order, is_visible, is_readonly,
 			recognition, geometry, setup_info
 		) VALUES (
 			$1,  $2,
-			$3,  $4,  $5,  $6,
-			$7,
-			$8,  $9,  $10, $11,
-			$12, $13, $14,
-			$15, $16, $17
+			$3,  $4,  $5,
+			$6,
+			$7,  $8,  $9,  $10,
+			$11, $12, $13,
+			$14, $15, $16
 		)
 		RETURNING id, created_at, updated_at`,
 		f.JobID, f.PageID,
-		f.FsUID, f.FieldName, f.ArrayIndex, f.SetupTable,
+		f.FieldName, f.ArrayIndex, f.SetupTable,
 		f.IsJobLevel,
 		f.FinalValue, f.FieldState, f.ValueSource, f.Confidence,
 		f.FieldOrder, f.IsVisible, f.IsReadonly,
@@ -375,7 +375,7 @@ func (s *Store) UpdateFieldValue(ctx context.Context, fieldID int64, value, stat
 // This is the primary Verification Workstation query.
 func (s *Store) GetFieldsForPage(ctx context.Context, pageID int64) ([]Field, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, job_id, page_id, fs_uid,
+		SELECT id, job_id, page_id,
 		       field_name, array_index, setup_table, is_job_level,
 		       final_value, field_state, value_source, confidence,
 		       field_order, is_visible, is_readonly,
@@ -432,7 +432,7 @@ func scanFields(rows pgx.Rows) ([]Field, error) {
 	for rows.Next() {
 		var f Field
 		err := rows.Scan(
-			&f.ID, &f.JobID, &f.PageID, &f.FsUID,
+			&f.ID, &f.JobID, &f.PageID,
 			&f.FieldName, &f.ArrayIndex, &f.SetupTable, &f.IsJobLevel,
 			&f.FinalValue, &f.FieldState, &f.ValueSource, &f.Confidence,
 			&f.FieldOrder, &f.IsVisible, &f.IsReadonly,

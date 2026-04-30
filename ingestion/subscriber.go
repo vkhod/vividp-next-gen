@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // ingestion/subscriber.go
 // NATS JetStream consumer for MinIO bucket notifications.
-// MinIO publishes ObjectCreated events to formstorm.minio.events when a file
+// MinIO publishes ObjectCreated events to vividp.minio.events when a file
 // lands in the input bucket. This subscriber picks them up and feeds them into
 // the same work queue as the HTTP webhook handler.
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -21,8 +22,8 @@ import (
 )
 
 const (
-	minioStreamName = "FORMSTORM_MINIO"
-	minioSubject    = "formstorm.minio.events"
+	minioStreamName = "VIVIDP_MINIO"
+	minioSubject    = "vividp.minio.events"
 	consumerDurable = "ingestion-service"
 )
 
@@ -47,7 +48,7 @@ func NewSubscriber(js jetstream.JetStream, workCh chan<- DetectedFile, cfg Confi
 	}
 }
 
-// Start ensures the FORMSTORM_MINIO stream exists, creates a durable consumer,
+// Start ensures the VIVIDP_MINIO stream exists, creates a durable consumer,
 // and processes messages until ctx is cancelled.
 func (s *Subscriber) Start(ctx context.Context) error {
 	// Ensure the stream that captures MinIO notifications exists.
@@ -100,34 +101,36 @@ func (s *Subscriber) handleMessage(msg jetstream.Msg) {
 			continue
 		}
 
-		key := rec.S3.Object.Key
+		key, _ := url.PathUnescape(rec.S3.Object.Key)
 		prefix := folderPrefix(key)
 
-		if isSignalFile(key) && prefix != "" && s.accumulator != nil {
-			tenantID, systemID := extractRouting(key, s.cfg.DefaultTenantID, s.cfg.DefaultSystemID)
-			bucket := rec.S3.Bucket.Name
-			var metaContent string
-			if filepath.Base(key) == "_READY.json" {
-				if rc, err := s.storage.ReadObject(context.Background(), bucket, key); err == nil {
-					if raw, err := io.ReadAll(io.LimitReader(rc, 1<<16)); err == nil {
-						metaContent = string(raw)
+		if isSignalFile(key) {
+			if prefix != "" && s.accumulator != nil {
+				tenantID, systemID := extractRouting(key, s.cfg.DefaultTenantID, s.cfg.DefaultSystemID)
+				bucket := rec.S3.Bucket.Name
+				var metaContent string
+				if filepath.Base(key) == "_READY.json" {
+					if rc, err := s.storage.ReadObject(context.Background(), bucket, key); err == nil {
+						if raw, err := io.ReadAll(io.LimitReader(rc, 1<<16)); err == nil {
+							metaContent = string(raw)
+						}
+						rc.Close()
 					}
-					rc.Close()
 				}
-			}
-			detected, ok := s.accumulator.Signal(prefix, filepath.Base(prefix), metaContent)
-			if ok {
-				detected.Bucket = bucket
-				detected.TenantID = tenantID
-				detected.SystemID = systemID
-				select {
-				case s.workCh <- detected:
-					dispatched++
-					s.log.Info("folder job queued", "folder", detected.Filename, "file_count", len(detected.AllKeys))
-				default:
-					s.log.Warn("work queue full — nacking folder signal", "key", key)
-					msg.Nak()
-					return
+				detected, ok := s.accumulator.Signal(prefix, filepath.Base(prefix), metaContent)
+				if ok {
+					detected.Bucket = bucket
+					detected.TenantID = tenantID
+					detected.SystemID = systemID
+					select {
+					case s.workCh <- detected:
+						dispatched++
+						s.log.Info("folder job queued", "folder", detected.Filename, "file_count", len(detected.AllKeys))
+					default:
+						s.log.Warn("work queue full — nacking folder signal", "key", key)
+						msg.Nak()
+						return
+					}
 				}
 			}
 			continue

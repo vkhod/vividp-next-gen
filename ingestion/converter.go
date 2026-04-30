@@ -119,15 +119,14 @@ func tryImageMagick(ctx context.Context, srcPath, outputDir string) (*Conversion
 	return collectTIFs(outputDir)
 }
 
-// copyAsOnePage is the last-resort fallback — copies the source as page_001.tif.
-// The file may not be a real TIF but at least the job is tracked and won't disappear.
-func copyAsOnePage(srcPath, outputDir string, log *slog.Logger) (*ConversionResult, error) {
-	dst := filepath.Join(outputDir, "page_001.tif")
-	if err := copyFile(srcPath, dst); err != nil {
-		return nil, fmt.Errorf("fallback copy: %w", err)
-	}
-	log.Warn("used fallback copy — file may not be valid TIF", "file", filepath.Base(srcPath))
-	return &ConversionResult{PagePaths: []string{dst}, PageCount: 1}, nil
+// copyAsOnePage was a last-resort fallback that renamed the source as page_001.tif
+// without any actual conversion — producing a corrupt artifact. It is now an error.
+// Install Ghostscript (gs) or ImageMagick (convert) to enable PDF/image conversion.
+func copyAsOnePage(srcPath, _ string, _ *slog.Logger) (*ConversionResult, error) {
+	return nil, fmt.Errorf(
+		"no conversion tool available for %s — install Ghostscript (gs) or ImageMagick (convert)",
+		filepath.Base(srcPath),
+	)
 }
 
 // collectTIFs scans outputDir and returns all page_*.tif files in sorted order.

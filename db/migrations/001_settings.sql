@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- FormStorm Next Gen — Settings & Multi-Tenant Schema
+-- VividP — Settings & Multi-Tenant Schema
 -- Migration 002: tenants, systems, station configs, document types, fields
 --
 -- Derived from real HapoalimClassification.xml system configuration.
@@ -333,7 +333,7 @@ CREATE TABLE IF NOT EXISTS field_definitions (
     name                TEXT        NOT NULL,
 
     -- field_index from XML — the global numeric ID (e.g. 294, 628)
-    -- Used for cross-referencing with legacy FormStorm data
+    -- Used for cross-referencing with legacy system data
     field_index         INT,
 
     -- field_order — display/processing sequence
@@ -482,7 +482,7 @@ CREATE TABLE IF NOT EXISTS field_definitions (
 --   zone_based:     Templates carry zone coordinates (bounding boxes) for each
 --                   field. The Recognition Hub uses image matching to pick the
 --                   right template, then OCRs specific regions. This is the
---                   legacy FormStorm path — optimal for fixed-layout forms.
+--                   legacy path — optimal for fixed-layout forms.
 --                   Template images stored in MinIO/S3.
 --
 --   hybrid:         Full-page OCR for classification, but zone hints from

@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 )
@@ -117,34 +118,37 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		key := rec.S3.Object.Key
+		key, _ := url.PathUnescape(rec.S3.Object.Key)
 		prefix := folderPrefix(key)
 
-		// Signal file — triggers release of accumulated folder as one job
-		if isSignalFile(key) && prefix != "" && h.accumulator != nil {
-			tenantID, systemID := extractRouting(key, h.defaultTenantID, h.defaultSystemID)
-			bucket := rec.S3.Bucket.Name
-			var metaContent string
-			if filepath.Base(key) == "_READY.json" {
-				if rc, err := h.storage.ReadObject(r.Context(), bucket, key); err == nil {
-					if raw, err := io.ReadAll(io.LimitReader(rc, 1<<16)); err == nil {
-						metaContent = string(raw)
+		// Signal file — triggers release of accumulated folder as one job.
+		// Always skip as a document regardless of path depth.
+		if isSignalFile(key) {
+			if prefix != "" && h.accumulator != nil {
+				tenantID, systemID := extractRouting(key, h.defaultTenantID, h.defaultSystemID)
+				bucket := rec.S3.Bucket.Name
+				var metaContent string
+				if filepath.Base(key) == "_READY.json" {
+					if rc, err := h.storage.ReadObject(r.Context(), bucket, key); err == nil {
+						if raw, err := io.ReadAll(io.LimitReader(rc, 1<<16)); err == nil {
+							metaContent = string(raw)
+						}
+						rc.Close()
 					}
-					rc.Close()
 				}
-			}
-			detected, ok := h.accumulator.Signal(prefix, filepath.Base(prefix), metaContent)
-			if ok {
-				detected.Bucket = bucket
-				detected.TenantID = tenantID
-				detected.SystemID = systemID
-				select {
-				case h.workQueue <- detected:
-					dispatched++
-					h.log.Info("folder job queued", "folder", detected.Filename, "file_count", len(detected.AllKeys))
-				default:
-					http.Error(w, "queue full", http.StatusServiceUnavailable)
-					return
+				detected, ok := h.accumulator.Signal(prefix, filepath.Base(prefix), metaContent)
+				if ok {
+					detected.Bucket = bucket
+					detected.TenantID = tenantID
+					detected.SystemID = systemID
+					select {
+					case h.workQueue <- detected:
+						dispatched++
+						h.log.Info("folder job queued", "folder", detected.Filename, "file_count", len(detected.AllKeys))
+					default:
+						http.Error(w, "queue full", http.StatusServiceUnavailable)
+						return
+					}
 				}
 			}
 			continue

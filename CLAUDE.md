@@ -1,22 +1,21 @@
-# FormStorm Next Gen — Project Context for AI Assistants
+# VividP — Project Context for AI Assistants
 ---
 
 ## Project Identity
 
 | Property | Value |
 |---|---|
-| **Project name** | FormStorm Next Gen |
-| **Repo root** | `D:\DEVELOPMENT\FORMSTORM-NEXT-GEN` |
-| **Go module** | `formstorm` |
-| **Company** | CharacTell Inc. |
-| **Role** | Complete architectural redesign of FormStorm 1.0 (Win32 monolith → cloud-native) |
+| **Project name** | VividP |
+| **Repo root** | `D:\DEVELOPMENT\VIVIDP-NEXT-GEN` |
+| **Go module** | `vividp` |
+| **Role** | Complete architectural redesign of the legacy Win32 monolith into a cloud-native platform |
 
 ---
 
 ## What This Project Is
 
-FormStorm is a production-grade **Intelligent Document Processing (IDP)** platform.
-The existing product (FormStorm 1.0) is a Win32 monolithic application. This project
+VividP is a production-grade **Intelligent Document Processing (IDP)** platform.
+The existing product is a Win32 monolithic application. This project
 rebuilds it as a collection of autonomous, cloud-native, independently deployable modules
 that run identically on a single on-premise server or across a global cloud deployment.
 
@@ -31,23 +30,22 @@ that run identically on a single on-premise server or across a global cloud depl
 | **Job** | Central domain object — one document being processed end-to-end |
 | **Job Envelope** | All artifacts + state for a job. Binary files in MinIO/S3, metadata in PostgreSQL |
 | **Tenant** | Organizational boundary — one client organization. Strict isolation between tenants |
-| **System** | FormStorm configuration entity — defines forms, templates, fields, rules for a tenant |
+| **System** | VividP configuration entity — defines forms, templates, fields, rules for a tenant |
 | **Station Config** | Per-pipeline-station parameters within a system (ingestion, recognition, verification, export) |
 | **Document Type** | A form definition within a system — fields, templates, tables, validation rules |
 | **Template** | Pre-defined form layout for structured field extraction (optional for content-first types) |
-| **Queue** (legacy) | FormStorm 1.0 term for what is now the Job Envelope |
+| **Queue** (legacy) | Legacy term for what is now the Job Envelope |
 | **IVO** | Intelligent Verification Oversight module — risk-based attention at verification time |
 | **VWD** | Visual Workflow Designer — no-code/low-code workflow builder (deferred) |
 | **DMR** | Digital Mail Room — automated inbound document routing |
 | **TruTypist** | Operator verification workstation (legacy name) |
-| **rfield** | Recognized field element from FormStorm 1.0 XML |
-| **rpage** | Recognized page element from FormStorm 1.0 XML |
+| **rfield** | Recognized field element from legacy XML |
+| **rpage** | Recognized page element from legacy XML |
 | **rpginfo** | Old page batch/bundle topology flags — **replaced by job_documents table** |
 | **setup_table** | Line-item table grouping a repeating field belongs to (e.g. "InvoiceLines") |
 | **array_index** | 1-based row index for repeating/line-item fields |
 | **operator_rotation** | Human-applied rotation during verification (VerifyRotate), distinct from scan rotation |
 | **Five value layers** | Per field: OCR raw → OCR normalized → LLM raw → LLM normalized → final/typist |
-| **fs_\* columns** | Migration helpers (`fs_uid`, `fs_status`, `fs_state`, `fs_pstate`) — drop after 1.0 decommission |
 | **idCliQ** | Identity document reading — explicitly **out of scope** for this modernization |
 
 ---
@@ -79,10 +77,10 @@ that run identically on a single on-premise server or across a global cloud depl
 ## Repository Structure
 
 ```
-formstorm-next-gen/
+vividp-next-gen/
   CLAUDE.md                       ← this file
   docker-compose.yml              ← local dev infrastructure
-  go.mod                          ← Go module: "formstorm"
+  go.mod                          ← Go module: "vividp"
   job-service/
     db/
       migrations/
@@ -113,7 +111,7 @@ formstorm-next-gen/
 ### Entity Hierarchy
 
 ```
-Platform (CharacTell-hosted defaults)
+Platform (hosted defaults)
   └── Tenant (e.g. Bank Hapoalim)
        ├── storage_config, compliance_config, features
        └── System (e.g. HapoalimClassification)
@@ -158,7 +156,7 @@ Service needs config for job J
        - station_configs (4 rows)
        - special document types (_JobForm, _GlobalForm, _Default)
   → Cache key: (system_id, version)
-  → Invalidation: NATS formstorm.systems.config.updated.{system_id}
+  → Invalidation: NATS vividp.systems.config.updated.{system_id}
        All services evict that cache entry. Next job triggers fresh load.
 ```
 
@@ -221,7 +219,7 @@ Each field carries three JSONB config buckets split by consumer:
 ### MinIO → NATS bucket notifications
 
 MinIO is configured to publish ObjectCreated events to NATS JetStream natively.
-When a file lands in the `input` bucket, NATS receives it on `formstorm.minio.events`.
+When a file lands in the `input` bucket, NATS receives it on `vividp.minio.events`.
 The injection service subscribes to this subject — no polling, no webhooks.
 
 Filtered to relevant file types: `.pdf, .tif, .tiff, .png, .jpg, .jpeg`.
@@ -246,10 +244,10 @@ docker compose up -d
 
 | Subject | Purpose |
 |---|---|
-| `formstorm.minio.events` | MinIO bucket notifications (ObjectCreated) |
-| `formstorm.jobs.events.{STATUS}` | Job state change broadcasts (fan-out) |
-| `formstorm.jobs.work.{station}` | Task assignment to worker pools (competing consumers) |
-| `formstorm.systems.config.updated.{system_id}` | Settings cache invalidation |
+| `vividp.minio.events` | MinIO bucket notifications (ObjectCreated) |
+| `vividp.jobs.events.{STATUS}` | Job state change broadcasts (fan-out) |
+| `vividp.jobs.work.{station}` | Task assignment to worker pools (competing consumers) |
+| `vividp.systems.config.updated.{system_id}` | Settings cache invalidation |
 
 ---
 
@@ -270,33 +268,30 @@ docker compose up -d
 5. **JSONB merge, never replace** — when updating `job_state`, always use
    `job_state = job_state || $new::jsonb`. Never do a full replacement.
 
-6. **fs_\* columns are temporary** — `fs_uid`, `fs_status`, `fs_state`, `fs_pstate` exist
-   only for 1.0 cross-referencing. Drop after decommission.
-
-7. **Settings are read-through-cache, never embedded** — pipeline services resolve settings
+6. **Settings are read-through-cache, never embedded** — pipeline services resolve settings
    from the in-memory cache keyed on (system_id, version). Structural decisions (which engine,
    which template matched) are recorded in the Job Envelope. Behavioral config (UI colors,
    export format) is resolved at runtime.
 
-8. **Templates are optional** — document types with `extraction_strategy = 'content_first'`
+7. **Templates are optional** — document types with `extraction_strategy = 'content_first'`
    have no template images. The field recognition_config (labels, masks, dictionaries)
    IS the extraction recipe.
 
-9. **Tenant isolation is absolute** — one tenant per system. No cross-tenant data access.
+8. **Tenant isolation is absolute** — one tenant per system. No cross-tenant data access.
    Storage paths, NATS subjects, and database queries are always scoped by tenant.
 
 ---
 
-## FormStorm 1.0 Compatibility Notes
+## Legacy Compatibility Notes
 
-The schema was designed by analyzing real FormStorm 1.0 artifacts:
+The schema was designed by analyzing real legacy artifacts:
 - HapoalimClassification.xml (system configuration — 30+ form definitions)
 - Production job XML files
 - `fsjob_json.pas` Delphi source unit
 
 Key mappings:
 
-| FormStorm 1.0 | FormStorm Next Gen |
+| Legacy | VividP |
 |---|---|
 | `<system>` XML root (~40 attributes) | `systems.global_config` JSONB |
 | `<parameters>/<input\|ocr\|verify\|export>` | `station_configs` table (4 rows per system) |
@@ -308,7 +303,6 @@ Key mappings:
 | `gen_labels`, `gen_mask`, `gen_dict` | `field_definitions.recognition_config` JSONB |
 | `validation_func`, `on_next`, `on_change` | `field_definitions.validation_config` JSONB (as strings for now) |
 | `display_if`, `read_only`, `eol_before` | `field_definitions.display_config` JSONB |
-| `job_id` attribute | `jobs.legacy_job_id` |
 | `v_name`, `v_time`, `nksv` | `verifier_name`, `verification_seconds`, `keystrokes_count` |
 | `jcn1/jct1/jcc1` | `classifications[]` JSONB array |
 | `rpginfo` end_doc/bundle flags | `job_documents` table |

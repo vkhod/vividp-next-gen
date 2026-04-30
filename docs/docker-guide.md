@@ -1,4 +1,4 @@
-# Docker & Docker Compose — FormStorm Infrastructure Guide
+# Docker & Docker Compose — VividP Infrastructure Guide
 
 > Human reference doc. Not read by AI coding assistants.
 
@@ -22,13 +22,13 @@ The `-d` means "detached" — run in the background so your terminal is free.
 
 ```
 docker-compose.yml
-├── postgres     → fs_postgres    (the database)
-├── nats         → fs_nats        (the message bus)
-├── minio        → fs_minio       (the file store)
-└── minio_setup  → fs_minio_setup (one-time bucket creator, then exits)
+├── postgres     → vividp_postgres    (the database)
+├── nats         → vividp_nats        (the message bus)
+├── minio        → vividp_minio       (the file store)
+└── minio_setup  → vividp_minio_setup (one-time bucket creator, then exits)
 ```
 
-### 1. `fs_postgres` — PostgreSQL 16
+### 1. `vividp_postgres` — PostgreSQL 16
 
 ```yaml
 image: postgres:16-alpine
@@ -49,7 +49,7 @@ The `postgres_data` named volume means data survives `docker-compose restart`. I
 
 ---
 
-### 2. `fs_nats` — NATS 2.10
+### 2. `vividp_nats` — NATS 2.10
 
 ```yaml
 image: nats:2.10-alpine
@@ -67,7 +67,7 @@ Browse the UI at http://localhost:8222 to see streams, consumers, and message co
 
 ---
 
-### 3. `fs_minio` — MinIO
+### 3. `vividp_minio` — MinIO
 
 ```yaml
 image: minio/minio:latest
@@ -78,11 +78,11 @@ command: "server /data --console-address :9001"
 
 MinIO is an S3-compatible object store — it stores binary files (PDFs, TIFs). The Go code uses the same API as AWS S3, so swapping MinIO for real S3 in production requires changing only the endpoint URL. Nothing in the application code changes.
 
-Browse the console at http://localhost:9001 (login: `formstorm` / `formstorm_dev`).
+Browse the console at http://localhost:9001 (login: `vividp` / `vividp_dev`).
 
 ---
 
-### 4. `fs_minio_setup` — the bucket creator
+### 4. `vividp_minio_setup` — the bucket creator
 
 ```yaml
 image: minio/mc:latest
@@ -93,7 +93,7 @@ depends_on:
 `mc` is the MinIO command-line client. This container runs three commands and then exits:
 
 ```bash
-mc alias set local http://minio:9000 formstorm formstorm_dev
+mc alias set local http://minio:9000 vividp vividp_dev
 mc mb local/jobs
 mc mb local/input
 mc mb local/archive
@@ -124,7 +124,7 @@ Each service has a health check:
 
 ```yaml
 healthcheck:
-  test: ["CMD", "pg_isready", "-U", "formstorm"]
+  test: ["CMD", "pg_isready", "-U", "vividp"]
   interval: 5s
   retries: 5
 ```
@@ -137,13 +137,13 @@ Docker probes the container on this interval. A container is `healthy` only when
 
 ```
 Your Windows machine
-├── localhost:5432  ──→  fs_postgres  (PostgreSQL)
-├── localhost:4222  ──→  fs_nats      (NATS client)
-├── localhost:8222  ──→  fs_nats      (NATS web UI)
-├── localhost:9000  ──→  fs_minio     (S3 API)
-└── localhost:9001  ──→  fs_minio     (MinIO web console)
+├── localhost:5432  ──→  vividp_postgres  (PostgreSQL)
+├── localhost:4222  ──→  vividp_nats      (NATS client)
+├── localhost:8222  ──→  vividp_nats      (NATS web UI)
+├── localhost:9000  ──→  vividp_minio     (S3 API)
+└── localhost:9001  ──→  vividp_minio     (MinIO web console)
 
-Inside the Docker network ("formstorm-next-gen_default"):
+Inside the Docker network ("vividp-next-gen_default"):
 ├── postgres:5432   ← how containers reach each other
 ├── nats:4222
 └── minio:9000
@@ -176,10 +176,10 @@ docker-compose down
 docker-compose down -v
 
 # Open an interactive shell inside a container
-docker exec -it fs_postgres bash
+docker exec -it vividp_postgres bash
 
 # Run a one-off command inside a container
-docker exec fs_postgres psql -U formstorm -d formstorm -c "SELECT * FROM jobs;"
+docker exec vividp_postgres psql -U vividp -d vividp -c "SELECT * FROM jobs;"
 
 # Restart a single service without touching others
 docker-compose restart postgres
@@ -191,13 +191,13 @@ docker-compose restart postgres
 
 | Service    | Username     | Password       |
 |------------|--------------|----------------|
-| PostgreSQL | `formstorm`  | `formstorm_dev` |
-| MinIO      | `formstorm`  | `formstorm_dev` |
+| PostgreSQL | `vividp`  | `vividp_dev` |
+| MinIO      | `vividp`  | `vividp_dev` |
 
 Connection strings used by the Go services (these are the defaults in `ingestion/config.go`):
 
 ```
-DATABASE_URL  = postgres://formstorm:formstorm_dev@localhost:5432/formstorm
+DATABASE_URL  = postgres://vividp:vividp_dev@localhost:5432/vividp
 NATS_URL      = nats://localhost:4222
 STORAGE_ENDPOINT = localhost:9000
 ```

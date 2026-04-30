@@ -1,4 +1,4 @@
-# FormStorm Next Gen — Pre-Injection Consolidation
+# VividP — Pre-Injection Consolidation
 
 ## What changed and why
 
@@ -7,13 +7,13 @@
 **New: MinIO → NATS bucket notifications**
 MinIO now publishes `ObjectCreated` events to NATS JetStream natively.
 When a file lands in the `input` bucket, MinIO fires an event to
-`formstorm.minio.events`. The injection service subscribes to this
+`vividp.minio.events`. The injection service subscribes to this
 subject — no polling, no filesystem watchers, no webhooks to manage.
 
 Config is via MinIO environment variables:
 - `MINIO_NOTIFY_NATS_ENABLE_PRIMARY: "on"`
 - `MINIO_NOTIFY_NATS_ADDRESS_PRIMARY: "nats:4222"`
-- `MINIO_NOTIFY_NATS_SUBJECT_PRIMARY: "formstorm.minio.events"`
+- `MINIO_NOTIFY_NATS_SUBJECT_PRIMARY: "vividp.minio.events"`
 - `MINIO_NOTIFY_NATS_JETSTREAM_PRIMARY: "on"` (durable — survives restarts)
 
 MinIO now `depends_on` NATS (must be healthy before MinIO starts, since
@@ -99,7 +99,7 @@ system_id = '00000000-0000-0000-0000-000000000002',  -- default system
 ## File layout after consolidation
 
 ```
-formstorm-next-gen/
+vividp-next-gen/
 ├── docker-compose.yml                    # Updated
 ├── job-service/
 │   └── db/
@@ -131,14 +131,14 @@ File dropped → MinIO input bucket
                  ↓
          MinIO fires ObjectCreated event
                  ↓
-         NATS: formstorm.minio.events
+         NATS: vividp.minio.events
                  ↓
          Injection Service (subscribes)
                  ↓
          Resolves tenant + system from path
          Loads ingestion station_config
          Creates job row in PostgreSQL
-         Publishes formstorm.jobs.events.detected
+         Publishes vividp.jobs.events.detected
 ```
 
 ---
@@ -159,6 +159,6 @@ PostgreSQL: 3 queries (~5ms)
          ↓
 Cache populated, key = (system_id, version)
          ↓
-Invalidation: NATS formstorm.systems.config.updated.{system_id}
+Invalidation: NATS vividp.systems.config.updated.{system_id}
   → all services evict that cache entry
 ```

@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // logger/logger.go
-// Shared structured logger for all FormStorm services.
+// Shared structured logger for all VividP services.
 // Produces NDJSON (one JSON object per line) — compatible with Docker/K8s log
 // collectors (Loki, Datadog, CloudWatch) out of the box.
 // ═══════════════════════════════════════════════════════════════════════════════

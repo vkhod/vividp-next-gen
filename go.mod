@@ -1,4 +1,4 @@
-module formstorm
+module vividp
 
 go 1.22
 

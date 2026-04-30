@@ -14,9 +14,9 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-const streamName = "FORMSTORM_JOBS"
+const streamName = "VIVIDP_JOBS"
 
-// Event is published to formstorm.jobs.events.{STATUS} after every transition.
+// Event is published to vividp.jobs.events.{STATUS} after every transition.
 // Kept lean — consumers fetch full job details from the Job Service if needed.
 type Event struct {
 	JobID      string    `json:"job_id"`
@@ -27,7 +27,7 @@ type Event struct {
 	OccurredAt time.Time `json:"occurred_at"`
 }
 
-// WorkMessage is published to formstorm.jobs.work.{station} to trigger the
+// WorkMessage is published to vividp.jobs.work.{station} to trigger the
 // next pipeline station. Carries only routing context — not file data.
 type WorkMessage struct {
 	JobID     string `json:"job_id"`
@@ -41,7 +41,7 @@ type Publisher struct {
 	js jetstream.JetStream
 }
 
-// NewPublisher connects to JetStream and ensures the FORMSTORM_JOBS stream exists.
+// NewPublisher connects to JetStream and ensures the VIVIDP_JOBS stream exists.
 // Idempotent — safe to call on every startup.
 func NewPublisher(nc *nats.Conn) (*Publisher, error) {
 	js, err := jetstream.New(nc)
@@ -52,8 +52,8 @@ func NewPublisher(nc *nats.Conn) (*Publisher, error) {
 	_, err = js.CreateOrUpdateStream(context.Background(), jetstream.StreamConfig{
 		Name: streamName,
 		Subjects: []string{
-			"formstorm.jobs.events.>", // broadcast — Admin Portal, Temporal, Audit
-			"formstorm.jobs.work.>",   // task assignment — one worker pool per station
+			"vividp.jobs.events.>", // broadcast — Admin Portal, Temporal, Audit
+			"vividp.jobs.work.>",   // task assignment — one worker pool per station
 		},
 		Storage:   jetstream.FileStorage,           // survive restarts
 		Retention: jetstream.LimitsPolicy,
@@ -86,7 +86,7 @@ func (p *Publisher) PublishTransition(ctx context.Context, j *Job) error {
 		return fmt.Errorf("marshal event: %w", err)
 	}
 
-	eventSubject := fmt.Sprintf("formstorm.jobs.events.%s", string(j.Status))
+	eventSubject := fmt.Sprintf("vividp.jobs.events.%s", string(j.Status))
 	if _, err = p.js.Publish(ctx, eventSubject, eventJSON); err != nil {
 		return fmt.Errorf("publish event %s: %w", eventSubject, err)
 	}
@@ -100,7 +100,7 @@ func (p *Publisher) PublishTransition(ctx context.Context, j *Job) error {
 			PageCount: j.PageCount,
 		}
 		workJSON, _ := json.Marshal(work)
-		workSubject := fmt.Sprintf("formstorm.jobs.work.%s", nextStation)
+		workSubject := fmt.Sprintf("vividp.jobs.work.%s", nextStation)
 
 		if _, err = p.js.Publish(ctx, workSubject, workJSON); err != nil {
 			return fmt.Errorf("publish work %s: %w", workSubject, err)
