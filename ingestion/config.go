@@ -27,6 +27,9 @@ type Config struct {
 	DefaultSystemID  string // UUID of the VividP System to assign new jobs
 	DefaultTenantID  string // UUID fallback tenant if not extractable from key
 
+	// Conversion service
+	ConversionURL string // HTTP base URL, e.g. http://conversion:8081
+
 	// HTTP server
 	WebhookPort   string
 	WebhookSecret string // optional shared secret for webhook validation
@@ -52,8 +55,9 @@ func LoadConfig() Config {
 		JobsBucket:       getenv("JOBS_BUCKET",       "jobs"),
 		DefaultSystemID:  getenv("VIVIDP_DEFAULT_SYSTEM_ID",  "00000000-0000-0000-0000-000000000002"),
 		DefaultTenantID:  getenv("VIVIDP_DEFAULT_TENANT_ID",  "00000000-0000-0000-0000-000000000001"),
-		WebhookPort:      getenv("WEBHOOK_PORT",       "8080"),
-		WebhookSecret:    getenv("WEBHOOK_SECRET",     ""),
+		ConversionURL:    getenv("CONVERSION_URL",       "http://localhost:8081"),
+		WebhookPort:      getenv("WEBHOOK_PORT",        "8080"),
+		WebhookSecret:    getenv("WEBHOOK_SECRET",      ""),
 		WorkerCount:   2, // increase for production
 		WorkQueueSize: 100,
 		LogLevel:      getenv("LOG_LEVEL", "info"),

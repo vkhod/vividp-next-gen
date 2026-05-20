@@ -1,0 +1,58 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-setup
+  namespace: vividp
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-minio
+          image: minio/mc:latest
+          command:
+            - sh
+            - -c
+            - |
+              until mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" 2>/dev/null; do
+                echo "Waiting for MinIO..."; sleep 5;
+              done
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: vividp-secrets
+                  key: MINIO_ROOT_USER
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vividp-secrets
+                  key: MINIO_ROOT_PASSWORD
+      containers:
+        - name: setup
+          image: minio/mc:latest
+          command:
+            - sh
+            - -c
+            - |
+              mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" &&
+              mc mb --ignore-existing local/input &&
+              mc mb --ignore-existing local/jobs &&
+              mc mb --ignore-existing local/templates &&
+              mc mb --ignore-existing local/archive &&
+              mc event add local/input arn:minio:sqs::PRIMARY:nats \
+                --event put \
+                --suffix '.pdf,.tif,.tiff,.png,.jpg,.jpeg' &&
+              echo "MinIO setup complete: buckets created, notifications configured."
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: vividp-secrets
+                  key: MINIO_ROOT_USER
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vividp-secrets
+                  key: MINIO_ROOT_PASSWORD

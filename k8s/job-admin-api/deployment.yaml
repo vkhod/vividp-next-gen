@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: job-admin-api
+  namespace: vividp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: job-admin-api
+  template:
+    metadata:
+      labels:
+        app: job-admin-api
+    spec:
+      containers:
+        - name: job-admin-api
+          image: vividp/job-admin-api:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8081
+          envFrom:
+            - configMapRef:
+                name: vividp-config
+            - secretRef:
+                name: vividp-secrets
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 5

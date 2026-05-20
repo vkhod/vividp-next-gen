@@ -1,7 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // ingestion/worker.go
-// Processes detected files: create job → convert → write artifacts → transition.
+// Processes detected files: create job → archive original → convert → ingest.
 // Runs as a pool of goroutines consuming from the work queue.
+// Conversion is delegated to the conversion service over HTTP.
 // ═══════════════════════════════════════════════════════════════════════════════
 package ingestion
 
@@ -12,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"vividp/job"
@@ -20,22 +22,24 @@ import (
 
 // Worker processes one file at a time from the work queue.
 type Worker struct {
-	id      string
-	svc     *job.Service
-	storage *Storage
-	cfg     Config
-	lic     license.Checker
-	log     *slog.Logger
+	id        string
+	svc       *job.Service
+	storage   *Storage
+	converter *ConversionClient
+	cfg       Config
+	lic       license.Checker
+	log       *slog.Logger
 }
 
-func NewWorker(id string, svc *job.Service, storage *Storage, cfg Config, lic license.Checker, log *slog.Logger) *Worker {
+func NewWorker(id string, svc *job.Service, storage *Storage, converter *ConversionClient, cfg Config, lic license.Checker, log *slog.Logger) *Worker {
 	return &Worker{
-		id:      id,
-		svc:     svc,
-		storage: storage,
-		cfg:     cfg,
-		lic:     lic,
-		log:     log.With("module", "worker", "worker_id", id),
+		id:        id,
+		svc:       svc,
+		storage:   storage,
+		converter: converter,
+		cfg:       cfg,
+		lic:       lic,
+		log:       log.With("module", "worker", "worker_id", id),
 	}
 }
 
@@ -75,8 +79,7 @@ func (w *Worker) processSingleFile(ctx context.Context, f DetectedFile) error {
 	start := time.Now()
 	w.log.Info("processing file", "file", f.Filename, "tenant", f.TenantID)
 
-	// ── Step 1: Create job immediately ──────────────────────────────────────
-	// Job exists in the DB from this moment — survives any downstream crash.
+	// ── Step 1: Create job ───────────────────────────────────────────────────
 	j, err := w.svc.CreateJob(ctx, job.CreateJobRequest{
 		TenantID:  f.TenantID,
 		SystemID:  f.SystemID,
@@ -108,44 +111,40 @@ func (w *Worker) processSingleFile(ctx context.Context, f DetectedFile) error {
 		return fmt.Errorf("transition to INGESTING: %w", err)
 	}
 
-	// ── Step 3: Set up temp working directory ───────────────────────────────
+	// ── Step 3: Download source file → archive to jobs bucket ───────────────
 	workDir, err := os.MkdirTemp("", fmt.Sprintf("fs-ingest-%s-*", j.ID[:8]))
 	if err != nil {
 		return w.failJob(ctx, j.ID, "create temp dir", err)
 	}
-	defer os.RemoveAll(workDir) // always clean up
+	defer os.RemoveAll(workDir)
 
-	// ── Step 4: Download source file from MinIO ─────────────────────────────
 	srcPath := filepath.Join(workDir, f.Filename)
 	if err := w.storage.DownloadToTemp(ctx, f.Bucket, f.Key, srcPath); err != nil {
 		return w.failJob(ctx, j.ID, "download source file", err)
 	}
 
-	// ── Step 5: Archive original file to jobs bucket ─────────────────────────
 	origKey, origSize, err := w.storage.UploadOriginal(ctx, j.ID, f.TenantID, f.SystemID, srcPath)
 	if err != nil {
 		return w.failJob(ctx, j.ID, "archive original", err)
 	}
 
-	// Record original file artifact
 	w.svc.RecordArtifact(ctx, job.AddArtifactRequest{
 		JobID: j.ID,
 		Artifact: job.Artifact{
 			Key:       origKey,
-			Type:      "original_pdf",
+			Type:      "original",
+			MimeType:  mimeTypeFromFilename(f.Filename),
 			PageNum:   0,
 			SizeBytes: origSize,
 			CreatedAt: time.Now().UTC(),
 		},
 	})
 
-	// ── Step 6: Convert to TIF pages ─────────────────────────────────────────
+	// ── Step 4: Transition to CONVERTING → call conversion service ───────────
 	_, err = w.svc.Transition(ctx, job.TransitionRequest{
 		JobID:    j.ID,
 		ToStatus: job.StatusConverting,
-		NewState: job.StateData{
-			"convert_started": time.Now().UTC().Format(time.RFC3339),
-		},
+		NewState: job.StateData{"convert_started": time.Now().UTC().Format(time.RFC3339)},
 		WorkerID: w.id,
 		Note:     "conversion started",
 	})
@@ -153,20 +152,14 @@ func (w *Worker) processSingleFile(ctx context.Context, f DetectedFile) error {
 		return w.failJob(ctx, j.ID, "transition to CONVERTING", err)
 	}
 
-	outputDir := filepath.Join(workDir, "pages")
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		return w.failJob(ctx, j.ID, "create output dir", err)
-	}
-
-	convResult, err := ConvertToTIF(ctx, srcPath, outputDir, w.log)
+	convResult, err := w.converter.Convert(ctx, j.ID, f.TenantID, f.SystemID, origKey)
 	if err != nil {
-		return w.failJob(ctx, j.ID, "convert to TIF", err)
+		return w.failJob(ctx, j.ID, "conversion service", err)
 	}
 
-	w.log.Info("conversion complete", "job_id", j.ID, "file", f.Filename, "pages", convResult.PageCount)
+	w.log.Info("conversion complete", "job_id", j.ID, "file", f.Filename, "pages", len(convResult.Pages))
 
-	// ── Step 7: Upload TIF pages to MinIO ────────────────────────────────────
-	// Create one document grouping for the whole file
+	// ── Step 5: Create document + page records ───────────────────────────────
 	doc := &job.Document{
 		JobID:                 j.ID,
 		DocumentIndex:         0,
@@ -174,61 +167,50 @@ func (w *Worker) processSingleFile(ctx context.Context, f DetectedFile) error {
 	}
 	if err := w.svc.CreateDocument(ctx, doc); err != nil {
 		w.log.Warn("failed to create document record", "job_id", j.ID, "error", err)
-		// Non-fatal — continue with page creation
 	}
 
-	for i, pagePath := range convResult.PagePaths {
-		pageNum := i + 1
-
-		// Upload TIF to MinIO
-		tifKey, tifSize, err := w.storage.UploadTIF(ctx, j.ID, f.TenantID, f.SystemID, pageNum, pagePath)
-		if err != nil {
-			return w.failJob(ctx, j.ID, fmt.Sprintf("upload page %d", pageNum), err)
-		}
-
-		// Record artifact
+	for _, pg := range convResult.Pages {
 		w.svc.RecordArtifact(ctx, job.AddArtifactRequest{
 			JobID: j.ID,
 			Artifact: job.Artifact{
-				Key:       tifKey,
-				Type:      "original_tif",
-				PageNum:   pageNum,
-				SizeBytes: tifSize,
+				Key:       pg.Key,
+				Type:      "page_jpeg",
+				MimeType:  "image/jpeg",
+				PageNum:   pg.PageNum,
+				SizeBytes: pg.SizeBytes,
 				CreatedAt: time.Now().UTC(),
 			},
 		})
 
-		// Create page record (order_key = float64(pageNum))
 		docID := doc.ID
 		state := "ingested"
-		srcPageNum := pageNum
+		srcPageNum := pg.PageNum
 		page := &job.Page{
 			JobID:             j.ID,
 			DocumentID:        &docID,
-			OriginalPageIndex: i, // 0-based
+			OriginalPageIndex: pg.PageNum - 1,
 			SourcePageNumber:  &srcPageNum,
-			OrderKey:          float64(pageNum),
+			OrderKey:          float64(pg.PageNum),
 			State:             &state,
 		}
 		if err := w.svc.CreatePage(ctx, page); err != nil {
-			w.log.Warn("failed to create page record", "job_id", j.ID, "page", pageNum, "error", err)
-			// Non-fatal — continue
+			w.log.Warn("failed to create page record", "job_id", j.ID, "page", pg.PageNum, "error", err)
 		}
 	}
 
-	// ── Step 8: Update page count and transition to INGESTED ─────────────────
-	if err := w.svc.SetPageCount(ctx, j.ID, convResult.PageCount); err != nil {
+	// ── Step 6: Finalize ─────────────────────────────────────────────────────
+	pageCount := len(convResult.Pages)
+	if err := w.svc.SetPageCount(ctx, j.ID, pageCount); err != nil {
 		w.log.Warn("set page count failed", "job_id", j.ID, "error", err)
 	}
 
 	duration := time.Since(start).Milliseconds()
-
 	_, err = w.svc.Transition(ctx, job.TransitionRequest{
 		JobID:    j.ID,
 		ToStatus: job.StatusIngested,
 		NewState: job.StateData{
-			"page_count":    convResult.PageCount,
-			"pages_written": convResult.PageCount,
+			"page_count":    pageCount,
+			"pages_written": pageCount,
 			"ingestion_ms":  duration,
 		},
 		WorkerID:    w.id,
@@ -240,13 +222,12 @@ func (w *Worker) processSingleFile(ctx context.Context, f DetectedFile) error {
 		return fmt.Errorf("transition to INGESTED: %w", err)
 	}
 
-	w.log.Info("file ingested", "job_id", j.ID, "file", f.Filename, "pages", convResult.PageCount, "ms", duration)
+	w.log.Info("file ingested", "job_id", j.ID, "file", f.Filename, "pages", pageCount, "ms", duration)
 	return nil
 }
 
 // processFolderJob ingests all files in a folder as one multi-document job.
 func (w *Worker) processFolderJob(ctx context.Context, f DetectedFile) error {
-	// ── Step 0: License check ────────────────────────────────────────────────
 	if !w.lic.CanIngest(f.TenantID, f.SystemID) {
 		w.log.Warn("license denied — dropping folder", "tenant", f.TenantID, "folder", f.Filename)
 		return nil
@@ -274,10 +255,9 @@ func (w *Worker) processFolderJob(ctx context.Context, f DetectedFile) error {
 	}
 	w.log.Info("folder job created", "job_id", j.ID, "folder", f.Filename)
 
-	// ── Step 1b: Apply meta from _READY.json content ─────────────────────────
+	// ── Step 1b: Apply meta from _READY.json ─────────────────────────────────
 	if f.MetaContent != "" {
-		payload, err := parseMeta([]byte(f.MetaContent))
-		if err == nil && payload != nil {
+		if payload, err := parseMeta([]byte(f.MetaContent)); err == nil && payload != nil {
 			state := job.StateData{}
 			if payload.JobAlias != nil {
 				state["job_alias"] = *payload.JobAlias
@@ -309,14 +289,7 @@ func (w *Worker) processFolderJob(ctx context.Context, f DetectedFile) error {
 		return fmt.Errorf("transition folder job to INGESTING: %w", err)
 	}
 
-	// ── Step 3: Temp working directory ──────────────────────────────────────
-	workDir, err := os.MkdirTemp("", fmt.Sprintf("fs-ingest-%s-*", j.ID[:8]))
-	if err != nil {
-		return w.failJob(ctx, j.ID, "create temp dir", err)
-	}
-	defer os.RemoveAll(workDir)
-
-	// ── Step 4: Transition to CONVERTING ────────────────────────────────────
+	// ── Step 3: Transition to CONVERTING ────────────────────────────────────
 	_, err = w.svc.Transition(ctx, job.TransitionRequest{
 		JobID:    j.ID,
 		ToStatus: job.StatusConverting,
@@ -328,7 +301,13 @@ func (w *Worker) processFolderJob(ctx context.Context, f DetectedFile) error {
 		return w.failJob(ctx, j.ID, "transition folder job to CONVERTING", err)
 	}
 
-	// ── Step 5: Process each file ────────────────────────────────────────────
+	workDir, err := os.MkdirTemp("", fmt.Sprintf("fs-ingest-%s-*", j.ID[:8]))
+	if err != nil {
+		return w.failJob(ctx, j.ID, "create temp dir", err)
+	}
+	defer os.RemoveAll(workDir)
+
+	// ── Step 4: Process each file ────────────────────────────────────────────
 	globalPageNum := 0
 	totalPages := 0
 
@@ -344,16 +323,18 @@ func (w *Worker) processFolderJob(ctx context.Context, f DetectedFile) error {
 			return w.failJob(ctx, j.ID, fmt.Sprintf("archive doc %d", docIdx), err)
 		}
 		w.svc.RecordArtifact(ctx, job.AddArtifactRequest{
-			JobID:    j.ID,
-			Artifact: job.Artifact{Key: origKey, Type: "original_pdf", PageNum: 0, SizeBytes: origSize, CreatedAt: time.Now().UTC()},
+			JobID: j.ID,
+			Artifact: job.Artifact{
+				Key:       origKey,
+				Type:      "original",
+				MimeType:  mimeTypeFromFilename(fe.Filename),
+				PageNum:   0,
+				SizeBytes: origSize,
+				CreatedAt: time.Now().UTC(),
+			},
 		})
 
-		outputDir := filepath.Join(workDir, fmt.Sprintf("pages%02d", docIdx))
-		if err := os.MkdirAll(outputDir, 0755); err != nil {
-			return w.failJob(ctx, j.ID, fmt.Sprintf("create output dir doc %d", docIdx), err)
-		}
-
-		convResult, err := ConvertToTIF(ctx, srcPath, outputDir, w.log)
+		convResult, err := w.converter.Convert(ctx, j.ID, f.TenantID, f.SystemID, origKey)
 		if err != nil {
 			return w.failJob(ctx, j.ID, fmt.Sprintf("convert doc %d", docIdx), err)
 		}
@@ -367,23 +348,27 @@ func (w *Worker) processFolderJob(ctx context.Context, f DetectedFile) error {
 			w.log.Warn("failed to create document record", "job_id", j.ID, "doc_index", docIdx, "error", err)
 		}
 
-		for i, pagePath := range convResult.PagePaths {
+		for _, pg := range convResult.Pages {
 			globalPageNum++
-			tifKey, tifSize, err := w.storage.UploadTIF(ctx, j.ID, f.TenantID, f.SystemID, globalPageNum, pagePath)
-			if err != nil {
-				return w.failJob(ctx, j.ID, fmt.Sprintf("upload page %d", globalPageNum), err)
-			}
 			w.svc.RecordArtifact(ctx, job.AddArtifactRequest{
-				JobID:    j.ID,
-				Artifact: job.Artifact{Key: tifKey, Type: "original_tif", PageNum: globalPageNum, SizeBytes: tifSize, CreatedAt: time.Now().UTC()},
+				JobID: j.ID,
+				Artifact: job.Artifact{
+					Key:       pg.Key,
+					Type:      "page_jpeg",
+					MimeType:  "image/jpeg",
+					PageNum:   globalPageNum,
+					SizeBytes: pg.SizeBytes,
+					CreatedAt: time.Now().UTC(),
+				},
 			})
+
 			docID := doc.ID
 			state := "ingested"
-			srcPageNum := i + 1
+			srcPageNum := pg.PageNum
 			page := &job.Page{
 				JobID:             j.ID,
 				DocumentID:        &docID,
-				OriginalPageIndex: i,
+				OriginalPageIndex: globalPageNum - 1,
 				SourcePageNumber:  &srcPageNum,
 				OrderKey:          float64(globalPageNum),
 				State:             &state,
@@ -392,10 +377,10 @@ func (w *Worker) processFolderJob(ctx context.Context, f DetectedFile) error {
 				w.log.Warn("failed to create page record", "job_id", j.ID, "page", globalPageNum, "error", err)
 			}
 		}
-		totalPages += convResult.PageCount
+		totalPages += len(convResult.Pages)
 	}
 
-	// ── Step 6: Finalize ─────────────────────────────────────────────────────
+	// ── Step 5: Finalize ─────────────────────────────────────────────────────
 	if err := w.svc.SetPageCount(ctx, j.ID, totalPages); err != nil {
 		w.log.Warn("set page count failed", "job_id", j.ID, "error", err)
 	}
@@ -424,7 +409,6 @@ func (w *Worker) processFolderJob(ctx context.Context, f DetectedFile) error {
 	return nil
 }
 
-// failJob transitions a job to FAILED and wraps the error.
 func (w *Worker) failJob(ctx context.Context, jobID, step string, cause error) error {
 	msg := fmt.Sprintf("%s: %v", step, cause)
 	w.svc.Transition(ctx, job.TransitionRequest{
@@ -437,11 +421,9 @@ func (w *Worker) failJob(ctx context.Context, jobID, step string, cause error) e
 	return fmt.Errorf("ingestion failed at [%s]: %w", step, cause)
 }
 
-// applyMeta checks for a .meta sidecar in MinIO and merges its contents into job_state.
-// Silent no-op if the object doesn't exist — that's the normal case.
 func (w *Worker) applyMeta(ctx context.Context, jobID, bucket, metaKey string) {
 	if _, err := w.storage.StatObject(ctx, bucket, metaKey); err != nil {
-		return // object doesn't exist — normal case
+		return
 	}
 	rc, err := w.storage.ReadObject(ctx, bucket, metaKey)
 	if err != nil {
@@ -449,13 +431,14 @@ func (w *Worker) applyMeta(ctx context.Context, jobID, bucket, metaKey string) {
 		return
 	}
 	defer rc.Close()
-	data, _ := io.ReadAll(io.LimitReader(rc, 1<<16)) // 64 KB cap
+	data, _ := io.ReadAll(io.LimitReader(rc, 1<<16))
 
 	w.svc.RecordArtifact(ctx, job.AddArtifactRequest{
 		JobID: jobID,
 		Artifact: job.Artifact{
 			Key:       metaKey,
 			Type:      "meta_json",
+			MimeType:  "application/json",
 			SizeBytes: int64(len(data)),
 			CreatedAt: time.Now().UTC(),
 		},
@@ -481,5 +464,28 @@ func (w *Worker) applyMeta(ctx context.Context, jobID, bucket, metaKey string) {
 	}
 	if len(state) > 0 {
 		w.svc.MergeJobState(ctx, jobID, state)
+	}
+}
+
+// mimeTypeFromFilename returns a MIME type based on file extension.
+func mimeTypeFromFilename(filename string) string {
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".pdf":
+		return "application/pdf"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".tif", ".tiff":
+		return "image/tiff"
+	case ".bmp":
+		return "image/bmp"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	default:
+		return "application/octet-stream"
 	}
 }

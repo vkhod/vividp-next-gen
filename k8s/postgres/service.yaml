@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: vividp
+spec:
+  # ClusterIP: reachable only inside the cluster at postgres:5432
+  # Other pods reference this as DATABASE_URL host "postgres"
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

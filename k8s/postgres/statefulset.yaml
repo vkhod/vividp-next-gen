@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: vividp
+spec:
+  serviceName: postgres        # Must match the Service name below
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_DB
+              value: vividp
+            - name: POSTGRES_USER
+              value: vividp
+            - name: POSTGRES_PASSWORD   # pulled from Secret, not ConfigMap
+              valueFrom:
+                secretKeyRef:
+                  name: vividp-secrets
+                  key: POSTGRES_PASSWORD
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "vividp"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+  # volumeClaimTemplates creates a PVC per replica automatically.
+  # kind uses a default StorageClass backed by hostPath.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

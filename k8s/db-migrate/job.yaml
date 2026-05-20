@@ -1,0 +1,45 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate
+  namespace: vividp
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      # initContainer waits until postgres is ready before the main container runs.
+      # This is the Kubernetes way to express "start after dependency is up".
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h postgres -U vividp; do
+                echo "Waiting for postgres..."; sleep 2;
+              done
+      containers:
+        - name: migrate
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - |
+              psql "$DATABASE_URL" -f /migrations/001_settings.sql &&
+              psql "$DATABASE_URL" -f /migrations/002_jobs.sql &&
+              echo "Migrations complete."
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: vividp-secrets
+                  key: DATABASE_URL
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+      volumes:
+        - name: migrations
+          configMap:
+            name: db-migrations  # created by setup.sh from db/migrations/

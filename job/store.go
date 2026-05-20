@@ -261,11 +261,11 @@ func (s *Store) CreateDocument(ctx context.Context, d *Document) error {
 	return s.db.QueryRow(ctx, `
 		INSERT INTO job_documents (
 			job_id, document_index, original_document_index,
-			form_name, template_name, bundle_name
-		) VALUES ($1, $2, $3, $4, $5, $6)
+			form_name, bundle_name
+		) VALUES ($1, $2, $3, $4, $5)
 		RETURNING id, created_at`,
 		d.JobID, d.DocumentIndex, d.OriginalDocumentIndex,
-		d.FormName, d.TemplateName, d.BundleName,
+		d.FormName, d.BundleName,
 	).Scan(&d.ID, &d.CreatedAt)
 }
 
@@ -274,12 +274,8 @@ func (s *Store) CreateDocument(ctx context.Context, d *Document) error {
 // CreatePage inserts a new page record.
 // orderKey uses fractional indexing (1.0, 2.0, 3.0...) — one row updated per reorder.
 func (s *Store) CreatePage(ctx context.Context, p *Page) error {
-	matchJSON, _ := json.Marshal(p.MatchCandidates)
 	prepJSON, _ := json.Marshal(p.Preprocessing)
 
-	if matchJSON == nil {
-		matchJSON = []byte("[]")
-	}
 	if prepJSON == nil {
 		prepJSON = []byte("{}")
 	}
@@ -292,7 +288,7 @@ func (s *Store) CreatePage(ctx context.Context, p *Page) error {
 			image_height_px, image_width_px,
 			original_file_path,
 			operator_rotation,
-			match_candidates, preprocessing
+			preprocessing
 		) VALUES (
 			$1,  $2,
 			$3,  $4,  $5,
@@ -300,7 +296,7 @@ func (s *Store) CreatePage(ctx context.Context, p *Page) error {
 			$8,  $9,
 			$10,
 			$11,
-			$12, $13
+			$12
 		)
 		RETURNING id, created_at`,
 		p.JobID, p.DocumentID,
@@ -309,7 +305,7 @@ func (s *Store) CreatePage(ctx context.Context, p *Page) error {
 		p.ImageHeightPx, p.ImageWidthPx,
 		p.OriginalFilePath,
 		p.OperatorRotation,
-		matchJSON, prepJSON,
+		prepJSON,
 	).Scan(&p.ID, &p.CreatedAt)
 }
 
@@ -394,6 +390,28 @@ func (s *Store) GetFieldsForPage(ctx context.Context, pageID int64) ([]Field, er
 	return scanFields(rows)
 }
 
+// GetFieldsForJob fetches all fields for a job, ordered by field_order.
+// Used by the export service to collect all recognized values.
+func (s *Store) GetFieldsForJob(ctx context.Context, jobID string) ([]Field, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, job_id, page_id,
+		       field_name, array_index, setup_table, is_job_level,
+		       final_value, field_state, value_source, confidence,
+		       field_order, is_visible, is_readonly,
+		       recognition, geometry, setup_info,
+		       created_at, updated_at
+		FROM job_fields
+		WHERE job_id = $1
+		ORDER BY field_order, array_index NULLS FIRST`,
+		jobID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanFields(rows)
+}
+
 // ── Scan helpers ──────────────────────────────────────────────────────────────
 
 // scanJobRow reads a lightweight job row (not all 50 columns — only what
@@ -459,6 +477,58 @@ func (s *Store) MergeJobState(ctx context.Context, jobID string, data StateData)
 		jsonBytes, jobID,
 	)
 	return err
+}
+
+// SetOnHold sets or clears the on_hold flag and inserts an audit transition row.
+func (s *Store) SetOnHold(ctx context.Context, jobID string, hold bool, workerID string) error {
+	var cur Status
+	err := s.db.QueryRow(ctx,
+		`SELECT status FROM jobs WHERE id = $1`, jobID,
+	).Scan(&cur)
+	if err != nil {
+		return fmt.Errorf("fetch job %s: %w", jobID, err)
+	}
+
+	note := "admin_hold"
+	if !hold {
+		note = "admin_release"
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx,
+		`UPDATE jobs SET on_hold = $1 WHERE id = $2`, hold, jobID,
+	)
+	if err != nil {
+		return fmt.Errorf("set on_hold: %w", err)
+	}
+
+	_, err = tx.Exec(ctx,
+		`INSERT INTO job_transitions (job_id, from_status, to_status, worker_id, note)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		jobID, string(cur), string(cur), workerID, note,
+	)
+	if err != nil {
+		return fmt.Errorf("insert transition: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
+// DeleteJob hard-deletes a job record. Cascades to all related tables via FK ON DELETE CASCADE.
+func (s *Store) DeleteJob(ctx context.Context, jobID string) error {
+	tag, err := s.db.Exec(ctx, `DELETE FROM jobs WHERE id = $1`, jobID)
+	if err != nil {
+		return fmt.Errorf("delete job %s: %w", jobID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("job %s not found", jobID)
+	}
+	return nil
 }
 
 func (s *Store) KeysWithJobs(ctx context.Context, bucket string, keys []string) (map[string]bool, error) {

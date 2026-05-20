@@ -94,8 +94,12 @@ func main() {
 	}
 	fmt.Println("✅ MinIO storage ready")
 
-	// ── Folder accumulator ───────────────────────────────────────────────────
-	acc := ingestion.NewFolderAccumulator(log)
+	// ── Folder accumulator (PostgreSQL-backed) ──────────────────────────────
+	acc := ingestion.NewFolderAccumulator(db, log)
+
+	// ── Conversion service client ────────────────────────────────────────────
+	converter := ingestion.NewConversionClient(cfg.ConversionURL)
+	fmt.Printf("✅ Conversion client → %s\n", cfg.ConversionURL)
 
 	// ── Work queue — buffered channel between webhook and workers ────────────
 	workQueue := make(chan ingestion.DetectedFile, cfg.WorkQueueSize)
@@ -105,7 +109,7 @@ func main() {
 	for i := 0; i < cfg.WorkerCount; i++ {
 		w := ingestion.NewWorker(
 			fmt.Sprintf("ingest-worker-%d", i+1),
-			svc, storage, cfg, lic, log,
+			svc, storage, converter, cfg, lic, log,
 		)
 		go w.Run(ctx, workQueue)
 	}

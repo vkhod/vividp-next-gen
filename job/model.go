@@ -16,8 +16,6 @@ const (
 	StatusIngested         Status = "INGESTED"
 	StatusClassifying      Status = "CLASSIFYING"
 	StatusClassified       Status = "CLASSIFIED"
-	StatusMatching         Status = "MATCHING"
-	StatusMatched          Status = "MATCHED"
 	StatusRecognizing      Status = "RECOGNIZING"
 	StatusRecognized       Status = "RECOGNIZED"
 	StatusValidating       Status = "VALIDATING"
@@ -37,13 +35,13 @@ var legalTransitions = map[Status][]Status{
 	StatusDetected:         {StatusIngesting, StatusFailed},
 	StatusIngesting:        {StatusConverting, StatusFailed},
 	StatusConverting:       {StatusIngested, StatusFailed},
-	StatusIngested:         {StatusClassifying, StatusFailed},
+	// INGESTED can go to CLASSIFYING (full pipeline) or RECOGNIZING (LLM-first, skip classification)
+	StatusIngested:         {StatusClassifying, StatusRecognizing, StatusFailed},
 	StatusClassifying:      {StatusClassified, StatusFailed},
-	StatusClassified:       {StatusMatching, StatusFailed},
-	StatusMatching:         {StatusMatched, StatusFailed},
-	StatusMatched:          {StatusRecognizing, StatusFailed},
+	StatusClassified:       {StatusRecognizing, StatusFailed},
 	StatusRecognizing:      {StatusRecognized, StatusFailed},
-	StatusRecognized:       {StatusValidating, StatusFailed},
+	// RECOGNIZED can go to VALIDATING (full pipeline) or EXPORTING (skip validation)
+	StatusRecognized:       {StatusValidating, StatusExporting, StatusFailed},
 	StatusValidating:       {StatusValidated, StatusValidationFailed, StatusFailed},
 	StatusValidated:        {StatusExporting, StatusFailed},
 	StatusValidationFailed: {StatusVerifying, StatusFailed},
@@ -65,10 +63,11 @@ func IsLegalTransition(from, to Status) bool {
 // nextWorkStation maps a job status to the NATS work subject for the next station.
 // Only statuses that hand off to a downstream worker are listed.
 var nextWorkStation = map[Status]string{
-	StatusIngested:         "classify",
-	StatusClassified:       "match",
-	StatusMatched:          "recognize",
-	StatusRecognized:       "validate",
+	// LLM-first pipeline: INGESTED → recognize (classification merged into recognition)
+	StatusIngested:         "recognize",
+	StatusClassified:       "recognize",
+	// LLM-first pipeline: RECOGNIZED → export (validation deferred)
+	StatusRecognized:       "export",
 	StatusValidated:        "export",
 	StatusValidationFailed: "verify",
 	StatusVerified:         "export",
@@ -97,8 +96,9 @@ type Classification struct {
 // Artifact is one file stored in MinIO/S3.
 type Artifact struct {
 	Key       string    `json:"key"`
-	Type      string    `json:"type"`      // original_pdf|original_tif|registered_tif|ocr_raw
-	PageNum   int       `json:"page_num"`  // 0 = job-level artifact
+	Type      string    `json:"type"`               // "original" | "page_jpeg" | "meta_json"
+	MimeType  string    `json:"mime_type,omitempty"` // "application/pdf" | "image/jpeg" | ...
+	PageNum   int       `json:"page_num"`            // 0 = job-level artifact
 	SizeBytes int64     `json:"size_bytes"`
 	SHA256    string    `json:"sha256,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
@@ -207,7 +207,6 @@ type Document struct {
 	DocumentIndex         int       `json:"document_index"`          // current order (mutable)
 	OriginalDocumentIndex int       `json:"original_document_index"` // immutable
 	FormName              *string   `json:"form_name,omitempty"`
-	TemplateName          *string   `json:"template_name,omitempty"`
 	BundleName            *string   `json:"bundle_name,omitempty"`
 	PageCount             int       `json:"page_count"`  // maintained by trigger
 	IsComplete            bool      `json:"is_complete"`
@@ -244,15 +243,6 @@ type Page struct {
 	// This is VerifyRotate from Delphi — completely separate from scan rotation
 	OperatorRotation int `json:"operator_rotation"`
 
-	// Template matching
-	SetupPageNo      *int    `json:"setup_page_no,omitempty"`
-	TemplateName     *string `json:"template_name,omitempty"`
-	OriginalTemplate *string `json:"original_template,omitempty"` // before operator override
-	MasterPageName   *string `json:"master_page_name,omitempty"`  // mpn from XML
-	MatchType        *int    `json:"match_type,omitempty"`
-	MatchConfidence  *int    `json:"match_confidence,omitempty"`
-	FTWTCandidates   int     `json:"ftwt_candidates"`
-
 	// Image geometry — CRITICAL for Verification Workstation bbox rendering
 	ImageHeightPx *int `json:"image_height_px,omitempty"`
 	ImageWidthPx  *int `json:"image_width_px,omitempty"`
@@ -266,18 +256,16 @@ type Page struct {
 	ExceptMessage       *string `json:"except_message,omitempty"`
 
 	// FSA archive originals — state before post-processing
-	FSAForm             *string `json:"fsa_form,omitempty"`
-	FSAOriginalPageNo   *int    `json:"fsa_original_page_no,omitempty"`
-	FSAOriginalTemplate *string `json:"fsa_original_template,omitempty"`
-	FSAOriginalState    *string `json:"fsa_original_state,omitempty"`
+	FSAForm           *string `json:"fsa_form,omitempty"`
+	FSAOriginalPageNo *int    `json:"fsa_original_page_no,omitempty"`
+	FSAOriginalState  *string `json:"fsa_original_state,omitempty"`
 
 	// CMC7 / MICR — banking/cheque documents
 	CMC7Flags int     `json:"cmc7_flags"`
 	CMC7      *string `json:"cmc7,omitempty"`
 
-	// JSONB — stored as raw JSON, populated by matching/preprocessing stages
-	MatchCandidates json.RawMessage `json:"match_candidates,omitempty"`
-	Preprocessing   json.RawMessage `json:"preprocessing,omitempty"`
+	// JSONB — stored as raw JSON, populated by preprocessing stage
+	Preprocessing json.RawMessage `json:"preprocessing,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 }

@@ -140,6 +140,26 @@ func (s *Service) MergeJobState(ctx context.Context, jobID string, data StateDat
 	return s.store.MergeJobState(ctx, jobID, data)
 }
 
+// HoldJob sets on_hold=TRUE. Admin-only action.
+func (s *Service) HoldJob(ctx context.Context, jobID, adminID string) error {
+	return s.store.SetOnHold(ctx, jobID, true, adminID)
+}
+
+// ReleaseJob sets on_hold=FALSE. Admin-only action.
+func (s *Service) ReleaseJob(ctx context.Context, jobID, adminID string) error {
+	return s.store.SetOnHold(ctx, jobID, false, adminID)
+}
+
+// DeleteJob hard-deletes a job and all its related rows. Admin-only action.
+func (s *Service) DeleteJob(ctx context.Context, jobID string) error {
+	return s.store.DeleteJob(ctx, jobID)
+}
+
+// ListFields returns all fields for a job, ordered by field_order.
+func (s *Service) ListFields(ctx context.Context, jobID string) ([]Field, error) {
+	return s.store.GetFieldsForJob(ctx, jobID)
+}
+
 // KeysWithJobs returns the subset of keys that already have a job row.
 func (s *Service) KeysWithJobs(ctx context.Context, bucket string, keys []string) (map[string]bool, error) {
 	return s.store.KeysWithJobs(ctx, bucket, keys)

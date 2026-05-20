@@ -97,6 +97,14 @@ vividp-next-gen/
     converter.go                  ← PDF/image → per-page TIF conversion
     webhook.go                    ← MinIO ObjectCreated webhook HTTP handler
     worker.go                     ← file processing worker goroutines
+  admin-ui/                       ← Jobs Admin UI (React 19 + Vite + Tailwind + shadcn/ui)
+    src/
+      pages/jobs/JobsAdminPage.tsx
+      components/jobs/            ← JobFilterBar, JobsTable, BulkActionBar, BulkConfirmDialog, StatusBadge
+      components/ui/              ← shadcn/ui base components (button, checkbox, dialog, input, badge)
+      hooks/useJobs.ts            ← TanStack Query wrapper (mock data until Phase 3)
+      types/job.ts                ← Job, JobFilters, JobStatus, BulkAction types
+      data/mockJobs.ts            ← 15 realistic seed jobs for development
   cmd/
     ingestion/main.go             ← Ingestion Service entry point
   docs/
@@ -357,3 +365,38 @@ Before proposing or applying any fix:
 1. **Identify the root cause** — do not apply surface-level workarounds (capping values, disabling features, adding fallbacks) unless explicitly asked to. If the root cause is unclear, ask a clarifying question before writing code.
 2. **Map all affected layers** — trace the problem through every layer it touches (DB schema → store → service → handler, or config → build → runtime). A fix at one layer that leaves another layer inconsistent is not a fix.
 3. **Propose, then implement** — for non-trivial bugs, state the root cause and the proposed fix before making edits. This avoids wasted work when the diagnosis is wrong.
+
+---
+
+## Current Focus
+
+We are building the **Jobs Admin screen** — a monitoring and debugging UI for internal admins.
+Work is divided into three phases:
+
+- **Phase 1:** Jobs list view (filters, bulk actions, multi-select)
+- **Phase 2:** Job detail view (Event Log mini-panel, S3 Artifacts mini-panel)
+- **Phase 3:** API wiring (replacing mock data with real endpoints)
+
+Frontend lives at `admin-ui/` (new directory, React 19 + TypeScript + Vite + Tailwind + shadcn/ui).
+Backend API will live at `cmd/job-admin-api/` (new Go entry point, 8 endpoints).
+
+## In Progress
+
+- [x] Phase 1 — Jobs list view (complete — `admin-ui/`)
+- [x] Phase 1 amendment — detail panel is a **resizable split** (not fixed drawer; drag handle between table and panel)
+- [x] Phase 2 — Job detail view (complete — `admin-ui/src/components/jobs/detail/`)
+- [x] Phase 3 — API wiring (complete)
+
+## Decisions Made
+
+- Detail view and mini-panels are empty stubs in Phase 1 — built in Phase 2
+- Detail panel is a resizable split (drag handle between table and panel; min 280px, max 800px, default 420px)
+- Mock/static data only until Phase 3
+- Mobile layout is out of scope
+- "NATS Messages" panel renamed to "Event Log" and backed by `job_transitions` table (not raw NATS payloads)
+- Admin API is a new `cmd/job-admin-api` entry point — does not extend the ingestion service
+- No auth/authorization in v1 — network-level access control assumed
+- Bug fix: detail panel clears when filters exclude the active job (`useEffect` on `jobs` array)
+- Phase 3 API wired: `admin/` package (store + handler), `cmd/job-admin-api/main.go`, `admin-ui/src/api/jobs.ts`
+- Artifacts panel is lazy — fetches presigned URLs (15-min TTL) only on first expand via `onOpenChange` in CollapsibleSection
+- BulkConfirmDialog calls real API per-job with async/error handling; mutations invalidate `['jobs','list']` and open detail cache

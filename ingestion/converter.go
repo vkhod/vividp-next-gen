@@ -1,165 +1,84 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // ingestion/converter.go
-// PDF / image → per-page TIF conversion.
-// Tries ImageMagick (convert) → Ghostscript (gs) → copy-as-is fallback.
+// HTTP client for the conversion service (POST /convert).
+// Replaces the old in-process ImageMagick/Ghostscript calls.
 // ═══════════════════════════════════════════════════════════════════════════════
 package ingestion
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
-	"log/slog"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"sort"
-	"strings"
+	"io"
+	"net/http"
 )
 
-// ConversionResult describes the output of converting one source file.
+// ConversionResult describes the pages returned by the conversion service.
 type ConversionResult struct {
-	PagePaths []string // absolute paths to per-page TIF files, sorted
-	PageCount int
-	WidthPx   int // first page width (used for all pages if consistent)
-	HeightPx  int // first page height
+	Pages []ConvertedPage
 }
 
-// ConvertToTIF converts any supported input format to per-page 300dpi greyscale TIFs.
-// Output files are written to outputDir as page_001.tif, page_002.tif, ...
-// Returns paths to all generated TIF files.
-func ConvertToTIF(ctx context.Context, srcPath, outputDir string, log *slog.Logger) (*ConversionResult, error) {
-	ext := strings.ToLower(filepath.Ext(srcPath))
+// ConvertedPage is one JPEG page produced by the conversion service.
+type ConvertedPage struct {
+	Key       string `json:"key"`
+	PageNum   int    `json:"page_num"`
+	SizeBytes int64  `json:"size_bytes"`
+}
 
-	switch ext {
-	case ".tif", ".tiff":
-		return handleTIF(ctx, srcPath, outputDir)
-	case ".pdf":
-		return handlePDF(ctx, srcPath, outputDir, log)
-	case ".jpg", ".jpeg", ".png", ".bmp":
-		return handleImage(ctx, srcPath, outputDir, log)
-	default:
-		// Unknown format — attempt ImageMagick, fallback to copy
-		result, err := tryImageMagick(ctx, srcPath, outputDir)
-		if err != nil {
-			return copyAsOnePage(srcPath, outputDir, log)
-		}
-		return result, nil
+// ConversionClient calls the conversion service over HTTP.
+type ConversionClient struct {
+	baseURL    string
+	httpClient *http.Client
+}
+
+func NewConversionClient(baseURL string) *ConversionClient {
+	return &ConversionClient{
+		baseURL:    baseURL,
+		httpClient: &http.Client{Timeout: 0}, // no global timeout — set per-request via context
 	}
 }
 
-// handleTIF — input is already TIF. Copy to output dir as page_001.tif.
-func handleTIF(_ context.Context, srcPath, outputDir string) (*ConversionResult, error) {
-	dst := filepath.Join(outputDir, "page_001.tif")
-	if err := copyFile(srcPath, dst); err != nil {
-		return nil, fmt.Errorf("copy TIF: %w", err)
-	}
-	info, _ := os.Stat(dst)
-	_ = info
-	return &ConversionResult{PagePaths: []string{dst}, PageCount: 1}, nil
-}
-
-// handlePDF — try Ghostscript first (better PDF fidelity), then ImageMagick.
-func handlePDF(ctx context.Context, srcPath, outputDir string, log *slog.Logger) (*ConversionResult, error) {
-	// Try Ghostscript — preferred for PDF
-	if _, err := exec.LookPath("gs"); err == nil {
-		outPattern := filepath.Join(outputDir, "page_%03d.tif")
-		cmd := exec.CommandContext(ctx,
-			"gs",
-			"-dNOPAUSE", "-dBATCH",
-			"-sDEVICE=tiffg4",        // CCITT Group 4 compression — compact B&W
-			"-r300",                   // 300 dpi
-			"-dGRAYSCALE",
-			fmt.Sprintf("-sOutputFile=%s", outPattern),
-			srcPath,
-		)
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		if err := cmd.Run(); err == nil {
-			return collectTIFs(outputDir)
-		}
-		log.Warn("gs failed, falling back to ImageMagick", "file", filepath.Base(srcPath))
+// Convert requests the conversion service to convert sourceKey to per-page JPEGs.
+// sourceKey must already be uploaded to the jobs bucket before calling this.
+func (c *ConversionClient) Convert(ctx context.Context, jobID, tenantID, systemID, sourceKey string) (*ConversionResult, error) {
+	reqBody := map[string]any{
+		"source_key":    sourceKey,
+		"source_bucket": "jobs",
+		"job_id":        jobID,
+		"tenant_id":     tenantID,
+		"system_id":     systemID,
+		"target_format": "jpeg_pages",
+		"options": map[string]int{
+			"dpi":     150,
+			"quality": 85,
+		},
 	}
 
-	// Fallback: ImageMagick
-	result, err := tryImageMagick(ctx, srcPath, outputDir)
+	data, _ := json.Marshal(reqBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/convert", bytes.NewReader(data))
 	if err != nil {
-		return copyAsOnePage(srcPath, outputDir, log)
+		return nil, fmt.Errorf("build request: %w", err)
 	}
-	return result, nil
-}
+	req.Header.Set("Content-Type", "application/json")
 
-// handleImage — single-page image formats.
-func handleImage(ctx context.Context, srcPath, outputDir string, log *slog.Logger) (*ConversionResult, error) {
-	result, err := tryImageMagick(ctx, srcPath, outputDir)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return copyAsOnePage(srcPath, outputDir, log)
+		return nil, fmt.Errorf("conversion service request: %w", err)
 	}
-	return result, nil
-}
+	defer resp.Body.Close()
 
-// tryImageMagick runs ImageMagick's convert command.
-func tryImageMagick(ctx context.Context, srcPath, outputDir string) (*ConversionResult, error) {
-	if _, err := exec.LookPath("convert"); err != nil {
-		return nil, fmt.Errorf("ImageMagick not found")
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("conversion service returned %d: %s", resp.StatusCode, body)
 	}
 
-	outPattern := filepath.Join(outputDir, "page_%03d.tif")
-	cmd := exec.CommandContext(ctx,
-		"convert",
-		"-density", "300",
-		"-type", "Grayscale",
-		"-compress", "Group4",
-		srcPath,
-		outPattern,
-	)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("convert: %w", err)
+	var result struct {
+		Pages []ConvertedPage `json:"pages"`
 	}
-	return collectTIFs(outputDir)
-}
-
-// copyAsOnePage was a last-resort fallback that renamed the source as page_001.tif
-// without any actual conversion — producing a corrupt artifact. It is now an error.
-// Install Ghostscript (gs) or ImageMagick (convert) to enable PDF/image conversion.
-func copyAsOnePage(srcPath, _ string, _ *slog.Logger) (*ConversionResult, error) {
-	return nil, fmt.Errorf(
-		"no conversion tool available for %s — install Ghostscript (gs) or ImageMagick (convert)",
-		filepath.Base(srcPath),
-	)
-}
-
-// collectTIFs scans outputDir and returns all page_*.tif files in sorted order.
-func collectTIFs(outputDir string) (*ConversionResult, error) {
-	pattern := filepath.Join(outputDir, "page_*.tif")
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return nil, fmt.Errorf("glob TIFs: %w", err)
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("parse conversion response: %w", err)
 	}
-	if len(matches) == 0 {
-		return nil, fmt.Errorf("no TIF pages generated in %s", outputDir)
-	}
-	sort.Strings(matches)
-	return &ConversionResult{
-		PagePaths: matches,
-		PageCount: len(matches),
-	}, nil
-}
 
-// copyFile copies src to dst.
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	_, err = out.ReadFrom(in)
-	return err
+	return &ConversionResult{Pages: result.Pages}, nil
 }

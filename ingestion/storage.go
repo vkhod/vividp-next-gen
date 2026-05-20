@@ -8,8 +8,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -80,6 +82,15 @@ func (s *Storage) StatObject(ctx context.Context, bucket, key string) (minio.Obj
 // ReadObject returns a reader for an object — used for streaming content.
 func (s *Storage) ReadObject(ctx context.Context, bucket, key string) (io.ReadCloser, error) {
 	return s.client.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
+}
+
+// PresignURL generates a presigned GET URL for an object. TTL is typically 15 minutes.
+func (s *Storage) PresignURL(ctx context.Context, bucket, key string, expiry time.Duration) (string, error) {
+	u, err := s.client.PresignedGetObject(ctx, bucket, key, expiry, url.Values{})
+	if err != nil {
+		return "", fmt.Errorf("presign %s/%s: %w", bucket, key, err)
+	}
+	return u.String(), nil
 }
 
 // ListObjects returns all objects under the given prefix in a bucket.

@@ -1,0 +1,182 @@
+services:
+
+  # ── Infrastructure ────────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: vividp
+      POSTGRES_USER: vividp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U vividp" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  nats:
+    image: nats:2.10-alpine
+    restart: unless-stopped
+    command: "-js -sd /data -m 8222"
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q --spider http://localhost:8222/healthz || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_NOTIFY_NATS_ENABLE_PRIMARY: "on"
+      MINIO_NOTIFY_NATS_ADDRESS_PRIMARY: "nats:4222"
+      MINIO_NOTIFY_NATS_SUBJECT_PRIMARY: "vividp.minio.events"
+      MINIO_NOTIFY_NATS_JETSTREAM_PRIMARY: "on"
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"   # S3 API (for clients that upload directly)
+      - "9001:9001"   # MinIO console — restrict access in production
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:9000/minio/health/live" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio_setup:
+    image: minio/mc:latest
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} &&
+        mc mb --ignore-existing local/input &&
+        mc mb --ignore-existing local/jobs &&
+        mc mb --ignore-existing local/templates &&
+        mc mb --ignore-existing local/archive &&
+        mc event add local/input arn:minio:sqs::PRIMARY:nats \
+          --event put \
+          --suffix '.pdf,.tif,.tiff,.png,.jpg,.jpeg' || true &&
+        echo 'MinIO setup complete'
+      "
+
+  # ── Application services ──────────────────────────────────────────────────────
+
+  conversion:
+    image: ghcr.io/${GITHUB_REPOSITORY}/conversion:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      STORAGE_ENDPOINT: minio:9000
+      STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER}
+      STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      JOBS_BUCKET: jobs
+      LISTEN_ADDR: ":8081"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  ingestion:
+    image: ghcr.io/${GITHUB_REPOSITORY}/ingestion:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://vividp:${POSTGRES_PASSWORD}@postgres:5432/vividp
+      NATS_URL: nats://nats:4222
+      STORAGE_ENDPOINT: minio:9000
+      STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER}
+      STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      JOBS_BUCKET: jobs
+      CONVERSION_URL: http://conversion:8081
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  job-admin-api:
+    image: ghcr.io/${GITHUB_REPOSITORY}/job-admin-api:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://vividp:${POSTGRES_PASSWORD}@postgres:5432/vividp
+      NATS_URL: nats://nats:4222
+      STORAGE_ENDPOINT: minio:9000
+      STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER}
+      STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      JOBS_BUCKET: jobs
+      LISTEN_ADDR: ":8080"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
+  recognition:
+    image: ghcr.io/${GITHUB_REPOSITORY}/recognition:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://vividp:${POSTGRES_PASSWORD}@postgres:5432/vividp
+      NATS_URL: nats://nats:4222
+      STORAGE_ENDPOINT: minio:9000
+      STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER}
+      STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      JOBS_BUCKET: jobs
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  export:
+    image: ghcr.io/${GITHUB_REPOSITORY}/export:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://vividp:${POSTGRES_PASSWORD}@postgres:5432/vividp
+      NATS_URL: nats://nats:4222
+      STORAGE_ENDPOINT: minio:9000
+      STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER}
+      STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      JOBS_BUCKET: jobs
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
+  # ── Nginx reverse proxy + Admin UI ───────────────────────────────────────────
+  # The Admin UI static assets are baked into the nginx image at build time.
+  # This eliminates VITE_ADMIN_API_URL — the UI always calls /api/* on same origin.
+  nginx:
+    image: ghcr.io/${GITHUB_REPOSITORY}/nginx:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - job-admin-api
+
+volumes:
+  postgres_data:
+  nats_data:
+  minio_data:

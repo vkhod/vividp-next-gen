@@ -142,14 +142,24 @@ func (s *Subscriber) handleMessage(msg jetstream.Msg) {
 
 		if prefix != "" && s.accumulator != nil {
 			tenantID, systemID := extractRouting(key, s.cfg.DefaultTenantID, s.cfg.DefaultSystemID)
-			s.accumulator.Add(prefix, DetectedFile{
+			if detected, ok := s.accumulator.Add(prefix, DetectedFile{
 				Bucket:   rec.S3.Bucket.Name,
 				Key:      key,
 				Filename: filepath.Base(key),
 				Size:     rec.S3.Object.Size,
 				TenantID: tenantID,
 				SystemID: systemID,
-			})
+			}); ok {
+				select {
+				case s.workCh <- detected:
+					dispatched++
+					s.log.Info("folder job queued (signal-first)", "folder", detected.Filename, "file_count", len(detected.AllKeys))
+				default:
+					s.log.Warn("work queue full — nacking folder (signal-first)", "key", key)
+					msg.Nak()
+					return
+				}
+			}
 			continue
 		}
 

@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingestion
+  namespace: vividp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ingestion
+  template:
+    metadata:
+      labels:
+        app: ingestion
+    spec:
+      containers:
+        - name: ingestion
+          image: vividp/ingestion:dev
+          imagePullPolicy: Never    # use the image loaded via: kind load docker-image
+          ports:
+            - containerPort: 8080
+          # envFrom injects all keys from a ConfigMap/Secret as env vars at once.
+          # This is cleaner than listing each env var individually.
+          envFrom:
+            - configMapRef:
+                name: vividp-config
+            - secretRef:
+                name: vividp-secrets
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5

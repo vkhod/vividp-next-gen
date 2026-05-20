@@ -158,17 +158,27 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Folder member — accumulate until signal arrives
+		// Folder member — accumulate until signal arrives.
+		// Add() returns (file, true) when a _READY signal was already received.
 		if prefix != "" && h.accumulator != nil {
 			tenantID, systemID := extractRouting(key, h.defaultTenantID, h.defaultSystemID)
-			h.accumulator.Add(prefix, DetectedFile{
+			if detected, ok := h.accumulator.Add(prefix, DetectedFile{
 				Bucket:   rec.S3.Bucket.Name,
 				Key:      key,
 				Filename: filepath.Base(key),
 				Size:     rec.S3.Object.Size,
 				TenantID: tenantID,
 				SystemID: systemID,
-			})
+			}); ok {
+				select {
+				case h.workQueue <- detected:
+					dispatched++
+					h.log.Info("folder job queued (signal-first)", "folder", detected.Filename, "file_count", len(detected.AllKeys))
+				default:
+					http.Error(w, "queue full", http.StatusServiceUnavailable)
+					return
+				}
+			}
 			continue
 		}
 

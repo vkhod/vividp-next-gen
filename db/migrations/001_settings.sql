@@ -275,29 +275,6 @@ CREATE TABLE IF NOT EXISTS document_types (
     is_global       BOOLEAN     NOT NULL DEFAULT FALSE,
     is_default      BOOLEAN     NOT NULL DEFAULT FALSE,
 
-    -- ── Extraction strategy ───────────────────────────────────────────────
-    -- Determines how the Recognition Hub approaches this document type.
-    --
-    -- 'content_first' — (default, modern path)
-    --   Full-page OCR first, then classify by content, then extract fields
-    --   using label patterns, dictionaries, and masks from field_definitions.
-    --   No template images needed. This is what gen_labels/gen_mask/gen_dict
-    --   already do in the legacy XML — it just wasn't the primary path.
-    --
-    -- 'zone_based' — (legacy structured forms)
-    --   Match template image → OCR specific bounding box regions.
-    --   Requires templates with zone coordinates.
-    --   Optimal for fixed-layout government/bank forms where field positions
-    --   never change and targeted OCR is faster/more accurate.
-    --
-    -- 'hybrid' — (best of both)
-    --   Full-page OCR for classification + content extraction,
-    --   but zone hints from templates used to improve accuracy when available.
-    --   Graceful degradation: works without zones, better with them.
-    --
-    extraction_strategy TEXT    NOT NULL DEFAULT 'content_first'
-                    CHECK (extraction_strategy IN ('content_first', 'zone_based', 'hybrid')),
-
     -- ── Form-level configuration ──────────────────────────────────────────
     -- From XML form attributes: allow_globalf_first, visible, etc.
     -- e.g. {"allow_global_first": true, "visible": true}
@@ -467,80 +444,6 @@ CREATE TABLE IF NOT EXISTS field_definitions (
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- TABLE: templates
--- Template definitions for document matching and zone-based extraction.
--- Maps to <template> elements nested inside <form>/<pages>/<page>.
---
--- DESIGN NOTE — Template role depends on extraction_strategy:
---
---   content_first:  Templates are OPTIONAL. Classification and field extraction
---                   happen via full-page OCR + content analysis. The field
---                   definitions (gen_labels, gen_mask, gen_dict) ARE the
---                   extraction recipe. Templates may still exist for reference
---                   or legacy migration but are not used in the hot path.
---
---   zone_based:     Templates carry zone coordinates (bounding boxes) for each
---                   field. The Recognition Hub uses image matching to pick the
---                   right template, then OCRs specific regions. This is the
---                   legacy path — optimal for fixed-layout forms.
---                   Template images stored in MinIO/S3.
---
---   hybrid:         Full-page OCR for classification, but zone hints from
---                   templates improve extraction accuracy when available.
---                   Degrades gracefully: works without zones, better with them.
---
--- For content_first document types, this table may have zero rows — and
--- that's perfectly fine. The field_definitions.recognition_config IS the
--- extraction recipe (labels, masks, dictionaries).
---
--- For zone_based types, the image_key points to the reference TIF in MinIO
--- and zone_coordinates holds the per-field bounding boxes.
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS templates (
-
-    id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    document_type_id    UUID        NOT NULL REFERENCES document_types(id),
-
-    -- Template name from XML — e.g. "Any0101", "20230215171251315"
-    name                TEXT        NOT NULL,
-
-    -- Page number this template belongs to (from XML nesting position)
-    page_no             INT         NOT NULL DEFAULT 1,
-
-    -- ── Image reference (zone_based / hybrid only) ────────────────────────
-    -- MinIO/S3 object key for the template image
-    -- NULL for content_first templates (no image needed)
-    image_key           TEXT,
-
-    -- no_match from XML — if true, this is a "catch-all" template
-    -- (used when the document doesn't match any specific template)
-    no_match            BOOLEAN     NOT NULL DEFAULT FALSE,
-
-    -- Original filename from XML (migration reference)
-    original_filename   TEXT,
-
-    -- ── Zone coordinates (zone_based / hybrid only) ───────────────────────
-    -- Per-field bounding boxes on this template's reference image.
-    -- Used by the Recognition Hub for targeted zone OCR.
-    -- NULL/empty for content_first templates.
-    -- {
-    --   "field_name": {"left": 350, "top": 120, "right": 580, "bottom": 155},
-    --   ...
-    -- }
-    zone_coordinates    JSONB       NOT NULL DEFAULT '{}',
-
-    -- ── Metadata ──────────────────────────────────────────────────────────
-    metadata            JSONB       NOT NULL DEFAULT '{}',
-
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-    -- Template name unique within document type
-    UNIQUE (document_type_id, name)
-);
-
-
--- ─────────────────────────────────────────────────────────────────────────────
 -- TABLE: table_definitions
 -- Line-item table structures within a document type.
 -- Maps to <table> elements in the XML.
@@ -668,16 +571,12 @@ CREATE INDEX idx_station_configs_system ON station_configs (system_id);
 CREATE INDEX idx_doctypes_system        ON document_types (system_id);
 CREATE INDEX idx_doctypes_system_code   ON document_types (system_id, code);
 CREATE INDEX idx_doctypes_global        ON document_types (system_id, is_global) WHERE is_global = TRUE;
-CREATE INDEX idx_doctypes_strategy      ON document_types (system_id, extraction_strategy);
 
 -- field_definitions
 CREATE INDEX idx_fields_doctype         ON field_definitions (document_type_id);
 CREATE INDEX idx_fields_index           ON field_definitions (field_index);
 CREATE INDEX idx_fields_table           ON field_definitions (document_type_id, table_name)
                                         WHERE table_name IS NOT NULL;
-
--- templates
-CREATE INDEX idx_templates_doctype      ON templates (document_type_id);
 
 -- table_definitions
 CREATE INDEX idx_tabledefs_doctype      ON table_definitions (document_type_id);
@@ -715,7 +614,6 @@ VALUES (
     'Default System',
     'native',
     '{
-        "use_template": true,
         "ignore_below": 70,
         "rotate_charset_in_ocr": 2,
         "auto_rot_in_ocr": true,

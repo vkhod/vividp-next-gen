@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     artifacts           JSONB       NOT NULL DEFAULT '[]',
 
     -- pipeline_timings: per-station duration in ms, recorded at each transition
-    -- e.g. {"ingest":420,"classify":850,"match":210}
+    -- e.g. {"ingest":420,"classify":850,"recognize":1200}
     pipeline_timings    JSONB       NOT NULL DEFAULT '{}',
 
     -- ── Worker claim ──────────────────────────────────────────────────────────
@@ -125,7 +125,6 @@ CREATE TABLE IF NOT EXISTS job_documents (
     original_document_index     INT     NOT NULL,   -- immutable — position at ingestion
 
     form_name                   TEXT,
-    template_name               TEXT,
     bundle_name                 TEXT,
     page_count                  INT     NOT NULL DEFAULT 0, -- maintained by trigger
     is_complete                 BOOLEAN NOT NULL DEFAULT FALSE,
@@ -176,21 +175,12 @@ CREATE TABLE IF NOT EXISTS job_pages (
     -- Preprocessing/scan rotation goes in preprocessing{} JSONB instead.
     operator_rotation       INT         NOT NULL DEFAULT 0,
 
-    -- ── Template matching ─────────────────────────────────────────────────────
-    setup_page_no           INT,
-    template_name           TEXT,
-    original_template       TEXT,       -- org_tmpl — before operator override
-    master_page_name        TEXT,       -- mpn e.g. "inv"
-    match_type              INT,
-    match_confidence        INT,        -- 0–100
-    ftwt_candidates         INT         DEFAULT 0,
-
     -- ── Image geometry — critical for Verification Workstation ────────────────
     -- Used to correctly scale and position field highlight boxes on screen
     image_height_px         INT,        -- imgh from XML
     image_width_px          INT,        -- imgw from XML
 
-    -- ── File references ───────────────────────────────────────────────────────
+    -- ── File references ──────────────────────────────────────────────────────
     original_file_path      TEXT,       -- orig_file_name (Windows path preserved)
     reassigned_form_name    TEXT,       -- nf_name — operator reassigned this page
     reassigned_form_page    INT,        -- nf_page_index
@@ -201,7 +191,6 @@ CREATE TABLE IF NOT EXISTS job_pages (
     -- ── FSA archive originals (state before post-processing) ──────────────────
     fsa_form                TEXT,       -- fsaofrm
     fsa_original_page_no    INT,        -- fsaorgpn
-    fsa_original_template   TEXT,       -- fsaotmpln
     fsa_original_state      TEXT,       -- fsaorgst
 
     -- ── CMC7 / MICR — banking/cheque documents ────────────────────────────────
@@ -209,8 +198,6 @@ CREATE TABLE IF NOT EXISTS job_pages (
     cmc7                    TEXT,
 
     -- ── JSONB ─────────────────────────────────────────────────────────────────
-    -- match_candidates: all template match candidates, not just the winner
-    match_candidates        JSONB       NOT NULL DEFAULT '[]',
     -- preprocessing: image operations applied to produce registered.tif
     -- e.g. {"deskewed":true,"deskew_angle_deg":0.8,"enhanced":false}
     preprocessing           JSONB       NOT NULL DEFAULT '{}',
@@ -311,7 +298,6 @@ CREATE TABLE IF NOT EXISTS job_stats (
     -- ── Phase durations ───────────────────────────────────────────────────────
     ingest_duration_ms          INT,
     classification_duration_ms  INT,
-    matching_duration_ms        INT,
     recognition_duration_ms     INT,
     validation_duration_ms      INT,
     verification_duration_ms    INT,
