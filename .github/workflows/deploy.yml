@@ -7,6 +7,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_TAG: ${{ github.sha }}
+  DEPLOY_PATH: /opt/vividp-next-gen
 
 jobs:
   build-and-push:
@@ -103,13 +104,25 @@ jobs:
           cache-to: type=gha,mode=max
 
   deploy:
-    name: Deploy to Hetzner
+    name: Deploy to server
     needs: build-and-push
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
 
     steps:
       - name: Checkout (for compose file)
         uses: actions/checkout@v4
+
+      - name: Ensure deploy directory exists
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: root
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            mkdir -p "${{ env.DEPLOY_PATH }}"
 
       - name: Copy docker-compose.prod.yml to server
         uses: appleboy/scp-action@v0.1.7
@@ -118,7 +131,7 @@ jobs:
           username: root
           key: ${{ secrets.SERVER_SSH_KEY }}
           source: "docker-compose.prod.yml"
-          target: "/opt/vividp"
+          target: "${{ env.DEPLOY_PATH }}"
 
       - name: Deploy
         uses: appleboy/ssh-action@v1.0.3
@@ -128,11 +141,12 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             set -e
-            cd /opt/vividp
+            cd "${{ env.DEPLOY_PATH }}"
 
             # Pull all new images
             export GITHUB_REPOSITORY=${{ github.repository }}
             export IMAGE_TAG=${{ github.sha }}
+            echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
             docker compose -f docker-compose.prod.yml pull
 
             # Restart with zero-downtime (compose handles it)
