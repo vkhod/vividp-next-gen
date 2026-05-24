@@ -124,6 +124,34 @@ jobs:
           script: |
             mkdir -p "${{ env.DEPLOY_PATH }}"
 
+      - name: Install systemd service for auto-start
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: root
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            cat > /etc/systemd/system/vividp.service << 'EOF'
+            [Unit]
+            Description=VividP Production Stack
+            Requires=docker.service
+            After=docker.service network-online.target
+
+            [Service]
+            Type=oneshot
+            RemainAfterExit=yes
+            WorkingDirectory=/opt/vividp-next-gen
+            ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            ExecStop=/usr/bin/docker compose -f docker-compose.prod.yml down
+            TimeoutStartSec=300
+            TimeoutStopSec=60
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+            systemctl daemon-reload
+            systemctl enable vividp
+
       - name: Copy docker-compose.prod.yml to server
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -143,16 +171,12 @@ jobs:
             set -e
             cd "${{ env.DEPLOY_PATH }}"
 
-            # Pull all new images
-            export GITHUB_REPOSITORY=${{ github.repository }}
             export IMAGE_TAG=${{ github.sha }}
             echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
             docker compose -f docker-compose.prod.yml pull
 
-            # Restart with zero-downtime (compose handles it)
             docker compose -f docker-compose.prod.yml up -d --remove-orphans
 
-            # Clean up old images
             docker image prune -f
 
             echo "Deploy complete — image: $IMAGE_TAG"
