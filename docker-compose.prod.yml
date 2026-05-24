@@ -120,7 +120,7 @@ services:
       STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER}
       STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       JOBS_BUCKET: jobs
-      LISTEN_ADDR: ":8080"
+      ADMIN_API_ADDR: ":8080"
       LOG_LEVEL: ${LOG_LEVEL:-info}
     depends_on:
       postgres:
