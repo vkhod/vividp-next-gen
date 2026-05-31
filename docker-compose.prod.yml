@@ -168,6 +168,17 @@ services:
       nats:
         condition: service_healthy
 
+  lambda-dispatcher:
+    image: ghcr.io/vkhod/vividp-next-gen/lambda-dispatcher:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      NATS_URL: nats://nats:4222
+      LAMBDA_DISPATCH: ${LAMBDA_DISPATCH:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      nats:
+        condition: service_healthy
+
   # ── Nginx reverse proxy + Admin UI ───────────────────────────────────────────
   # Admin UI static assets are baked into the nginx image at build time.
   # UI calls /api/* on same origin — no VITE_ADMIN_API_URL needed.
@@ -178,6 +189,26 @@ services:
       - "6780:80"   # Admin UI + API proxy
     depends_on:
       - job-admin-api
+
+  # ── One-shot migration runner — invoked explicitly during deploy ─────────────
+  # Runs via: docker compose --profile migration run --rm db-migrate
+  # Not started by the regular `docker compose up` command.
+  db-migrate:
+    image: postgres:16-alpine
+    profiles: ["migration"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGHOST: postgres
+      PGUSER: vividp
+      PGDATABASE: vividp
+    volumes:
+      - ./db/migrations:/migrations:ro
+      - ./db/migrate.sh:/migrate.sh:ro
+    entrypoint: ["sh", "/migrate.sh"]
 
 volumes:
   postgres_data:
