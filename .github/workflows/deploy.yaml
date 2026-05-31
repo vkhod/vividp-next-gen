@@ -1,0 +1,119 @@
+name: Deploy
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  # ── Build & push all application images in parallel ──────────────────────────
+  build:
+    name: Build ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - service: conversion
+            dockerfile: Dockerfile.conversion
+          - service: ingestion
+            dockerfile: Dockerfile.ingestion
+          - service: recognition
+            dockerfile: Dockerfile.recognition
+          - service: export
+            dockerfile: Dockerfile.export
+          - service: job-admin-api
+            dockerfile: Dockerfile.job-admin-api
+          - service: nginx
+            dockerfile: Dockerfile.nginx
+          - service: lambda-dispatcher
+            dockerfile: Dockerfile.lambda-dispatcher
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}/${{ matrix.service }}:latest
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  # ── Deploy to on-premise server ───────────────────────────────────────────────
+  deploy:
+    name: Deploy to server
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read   # lets GITHUB_TOKEN pull images on the server via docker login
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Prepare server directories
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: root
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: mkdir -p /opt/vividp-next-gen/db/migrations
+
+      - name: Copy deployment files
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: root
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          source: "docker-compose.prod.yml,db/migrations,db/migrate.sh"
+          target: /opt/vividp-next-gen
+
+      - name: Run migrations and restart stack
+        uses: appleboy/ssh-action@v1
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          IMAGE_TAG: ${{ github.sha }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: root
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: GHCR_TOKEN,GITHUB_ACTOR,IMAGE_TAG
+          script: |
+            set -e
+
+            # Authenticate with GHCR so we can pull the new images
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+            cd /opt/vividp-next-gen
+
+            # Bring postgres up and wait for it to be healthy before running migrations
+            docker compose -f docker-compose.prod.yml up -d postgres
+            timeout 60 sh -c \
+              'until docker compose -f docker-compose.prod.yml exec -T postgres pg_isready -U vividp; do sleep 3; done'
+
+            # Apply any pending migrations (idempotent — skips already-applied files)
+            docker compose -f docker-compose.prod.yml --profile migration run --rm db-migrate
+
+            # Pull the newly built images, then bring the full stack up
+            IMAGE_TAG=$IMAGE_TAG docker compose -f docker-compose.prod.yml pull \
+              conversion ingestion recognition export job-admin-api nginx lambda-dispatcher
+            IMAGE_TAG=$IMAGE_TAG docker compose -f docker-compose.prod.yml up -d --remove-orphans
+
+            # Remove dangling images from previous deploys
+            docker image prune -f

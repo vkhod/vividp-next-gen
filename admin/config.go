@@ -14,6 +14,11 @@ type Config struct {
 	ListenAddr       string
 	LogLevel         string
 	LogFile          string
+
+	// Auth — required when ADMIN_PASSWORD is set; skipped if empty (dev only).
+	AdminUsername   string // env: ADMIN_USERNAME, default "admin"
+	AdminPassword   string // env: ADMIN_PASSWORD
+	SessionSecret   string // env: ADMIN_SESSION_SECRET
 }
 
 func LoadConfig() Config {
@@ -28,6 +33,9 @@ func LoadConfig() Config {
 		ListenAddr:       getenv("ADMIN_API_ADDR", ":8081"),
 		LogLevel:         getenv("LOG_LEVEL", "info"),
 		LogFile:          getenv("LOG_FILE", "logs/job-admin-api.log"),
+		AdminUsername:    getenv("ADMIN_USERNAME", "admin"),
+		AdminPassword:    getenv("ADMIN_PASSWORD", ""),
+		SessionSecret:    getenv("ADMIN_SESSION_SECRET", ""),
 	}
 }
 

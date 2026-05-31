@@ -105,6 +105,12 @@ func (s *Service) ClaimJob(ctx context.Context, status Status, workerID string) 
 	return s.store.ClaimJob(ctx, status, workerID)
 }
 
+// ClaimJobByID claims a specific job by ID if it is in the expected status.
+// Returns nil, nil if the job is not available (wrong status, on hold, already claimed).
+func (s *Service) ClaimJobByID(ctx context.Context, jobID string, status Status, workerID string) (*Job, error) {
+	return s.store.ClaimJobByID(ctx, jobID, status, workerID)
+}
+
 // RecordArtifact appends a file artifact to the job manifest.
 // Called by the Ingestion Service as each TIF page is written to MinIO.
 func (s *Service) RecordArtifact(ctx context.Context, req AddArtifactRequest) error {

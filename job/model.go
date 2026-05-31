@@ -60,6 +60,29 @@ func IsLegalTransition(from, to Status) bool {
 	return false
 }
 
+// StageForStatus returns the pipeline stage name for a given status.
+// FAILED and DEAD_LETTER return "" so the store keeps the last known stage,
+// preserving which station the job died in.
+func StageForStatus(s Status) string {
+	return map[Status]string{
+		StatusDetected:         "INGESTION",
+		StatusIngesting:        "INGESTION",
+		StatusConverting:       "INGESTION",
+		StatusIngested:         "INGESTION",
+		StatusClassifying:      "CLASSIFICATION",
+		StatusClassified:       "CLASSIFICATION",
+		StatusRecognizing:      "RECOGNITION",
+		StatusRecognized:       "RECOGNITION",
+		StatusValidating:       "VALIDATION",
+		StatusValidated:        "VALIDATION",
+		StatusValidationFailed: "VALIDATION",
+		StatusVerifying:        "VERIFICATION",
+		StatusVerified:         "VERIFICATION",
+		StatusExporting:        "EXPORT",
+		StatusCompleted:        "COMPLETED",
+	}[s]
+}
+
 // nextWorkStation maps a job status to the NATS work subject for the next station.
 // Only statuses that hand off to a downstream worker are listed.
 var nextWorkStation = map[Status]string{

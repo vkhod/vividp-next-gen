@@ -54,17 +54,18 @@ that run identically on a single on-premise server or across a global cloud depl
 
 | Language | Used For | Why |
 |---|---|---|
-| **Go** | CPU-bound pipeline/microservices: Ingestion, Job Service, Recognition Hub, API Gateway | Concurrency, single binary, fast cold start |
+| **Go** | CPU-bound pipeline/microservices: Ingestion, Job Service, Recognition Hub, API Gateway, Lambda Dispatcher | Concurrency, single binary, fast cold start |
 | **Python** | ML/classification, validation logic, data processing | ML ecosystem, ONNX, OpenCV |
 | **TypeScript/React** | Human-facing UIs: Verification Workstation, Admin Portal, VWD | React 19, TanStack Query, Tailwind, shadcn/ui |
 
 | Infrastructure | Role |
 |---|---|
-| **PostgreSQL + JSONB** | Job state, settings, field values, audit log |
-| **MinIO / S3** | Binary artifact store — same S3 API on-prem and cloud |
-| **NATS JetStream** | Event bus — bucket notifications, job events, config invalidation |
+| **PostgreSQL + JSONB** | Job state, settings, field values, audit log — always running |
+| **MinIO / S3** | Binary artifact store — same S3 API on-prem and cloud — always running |
+| **NATS JetStream** | Event bus — bucket notifications, job events, config invalidation — always running |
 | **Temporal.io** | Durable workflow orchestration |
 | **Docker / K8s** | Docker Compose (dev), K3s/K8s (on-prem prod), EKS/GKE (cloud prod) |
+| **AWS Lambda** | Stateless processing modules (IVO, classification, validation, DMR) — triggered via lambda-dispatcher |
 
 ### Frontend Stack
 - React 19 + TypeScript + Vite
@@ -80,36 +81,64 @@ that run identically on a single on-premise server or across a global cloud depl
 vividp-next-gen/
   CLAUDE.md                       ← this file
   docker-compose.yml              ← local dev infrastructure
+  docker-compose.prod.yml         ← production stack (all services)
   go.mod                          ← Go module: "vividp"
-  job-service/
-    db/
-      migrations/
-        001_settings.sql          ← tenants, systems, station_configs, document_types, ...
-        002_jobs.sql              ← jobs, job_documents, job_pages, job_fields, ...
+  db/
+    migrations/
+      001_settings.sql            ← tenants, systems, station_configs, document_types, ...
+      002_jobs.sql                ← jobs, job_documents, job_pages, job_fields, ...
   job/                            ← core domain package (Go)
     model.go                      ← Job, Document, Page, Field structs + state machine
     store.go                      ← PostgreSQL operations (ONLY writer to jobs table)
-    publisher.go                  ← NATS JetStream event publishing
+    publisher.go                  ← NATS JetStream event publishing (publishes vividp.jobs.events.*)
     service.go                    ← business logic orchestrating store + publisher
-  ingestion/                      ← ingestion service package (Go)
-    config.go                     ← environment-based configuration
+  ingestion/                      ← ingestion service package (Go) — long-running container
+    config.go
     storage.go                    ← MinIO/S3 client wrapper
-    converter.go                  ← PDF/image → per-page TIF conversion
-    webhook.go                    ← MinIO ObjectCreated webhook HTTP handler
+    subscriber.go                 ← NATS JetStream durable consumer for MinIO events
+    accumulator.go                ← FolderAccumulator — in-memory multi-file folder grouping
     worker.go                     ← file processing worker goroutines
+  conversion/                     ← conversion service (Go) — long-running container, HTTP server
+    handler.go                    ← PDF/image → per-page JPEG via HTTP
+    storage.go
+    converter.go
+  recognition/                    ← recognition service (Go) — long-running container
+    worker.go                     ← NATS consumer → Claude API → job_fields
+    storage.go
+    prompt.go
+  export/                         ← export service (Go) — long-running container
+    worker.go                     ← NATS consumer → builds result.json → MinIO
+    storage.go
+  admin/                          ← admin API package (Go)
+    store.go                      ← read queries for admin UI
+    handler.go                    ← HTTP handlers (read endpoints + /api/internal/* write endpoints for Lambda callbacks)
+    config.go
+  lambda-dispatcher/              ← NATS → Lambda bridge (Go) — long-running container
+    dispatcher.go                 ← subscribes to vividp.jobs.events.*, calls Lambda Function URLs
+    config.go                     ← LAMBDA_DISPATCH env var: "STATUS:url,STATUS:url"
+  cmd/
+    ingestion/main.go             ← Ingestion Service entry point
+    conversion/main.go            ← Conversion Service entry point
+    recognition/main.go           ← Recognition Service entry point
+    export/main.go                ← Export Service entry point
+    job-admin-api/main.go         ← Admin API entry point
+    lambda-dispatcher/main.go     ← Lambda Dispatcher entry point
+  tests/
+    integration/
+      pipeline_test.go            ← end-to-end tests: state transitions, single-file pipeline, folder pipeline
+      helpers_test.go             ← test infrastructure: connect(), waitForStatus(), cleanup helpers
   admin-ui/                       ← Jobs Admin UI (React 19 + Vite + Tailwind + shadcn/ui)
     src/
       pages/jobs/JobsAdminPage.tsx
       components/jobs/            ← JobFilterBar, JobsTable, BulkActionBar, BulkConfirmDialog, StatusBadge
-      components/ui/              ← shadcn/ui base components (button, checkbox, dialog, input, badge)
-      hooks/useJobs.ts            ← TanStack Query wrapper (mock data until Phase 3)
+      components/ui/              ← shadcn/ui base components
+      api/jobs.ts                 ← fetch wrappers for admin API
+      hooks/useJobs.ts            ← TanStack Query wrapper
       types/job.ts                ← Job, JobFilters, JobStatus, BulkAction types
-      data/mockJobs.ts            ← 15 realistic seed jobs for development
-  cmd/
-    ingestion/main.go             ← Ingestion Service entry point
   docs/
     decisions.md                  ← architectural decision log (ADRs)
     schema.md                     ← schema design narrative
+    deployment-context.md         ← server, CI/CD, ports, secrets reference
 ```
 
 ---
@@ -288,6 +317,13 @@ docker compose up -d
 8. **Tenant isolation is absolute** — one tenant per system. No cross-tenant data access.
    Storage paths, NATS subjects, and database queries are always scoped by tenant.
 
+9. **Lambda modules never touch PostgreSQL directly** — PostgreSQL is bound to `127.0.0.1` and
+   is not reachable from Lambda. All DB writes from Lambda go through
+   `job-admin-api /api/internal/*`. Direct MinIO access for binary artifacts is allowed.
+
+10. **lambda-dispatcher is config-only** — adding a new Lambda trigger requires only a new
+    `LAMBDA_DISPATCH` env var entry. No code changes to the dispatcher or any pipeline service.
+
 ---
 
 ## Legacy Compatibility Notes
@@ -321,9 +357,82 @@ Key mappings:
 
 ---
 
+## Hybrid Lambda Architecture
+
+### Decision
+
+The three core pipeline stages — **ingestion, recognition, export** — stay as long-running Docker containers with NATS JetStream durable consumers. They hold in-memory state (FolderAccumulator), persistent connection pools, and goroutine worker pools that are incompatible with Lambda's stateless, short-lived execution model.
+
+Future processing modules (IVO, classification, validation, DMR, audit hooks) will be implemented as **AWS Lambda functions**. These are stateless, event-triggered, and fit Lambda's model exactly.
+
+PostgreSQL, NATS JetStream, and MinIO always run as containers. They are the permanent backbone that both long-running services and Lambda functions share.
+
+### How Lambda Gets Triggered
+
+Lambda cannot consume NATS natively. A dedicated **`lambda-dispatcher`** service bridges the two:
+
+```
+job.Service.Transition() → PublishTransition() → NATS vividp.jobs.events.{STATUS}
+                                                         ↓
+                                               [lambda-dispatcher container]
+                                               subscribes to vividp.jobs.events.*
+                                               reads LAMBDA_DISPATCH dispatch table
+                                                         ↓
+                                               HTTP POST → Lambda Function URL
+                                                         ↓
+                                               Lambda processes (reads MinIO, calls Claude, etc.)
+                                                         ↓
+                                               HTTP POST → job-admin-api /api/internal/...
+                                               (writes to PG via job.Service, publishes next NATS event)
+```
+
+`publisher.go` is unchanged — it already publishes `vividp.jobs.events.*` on every transition. The dispatcher subscribes to those same events.
+
+### Lambda Dispatcher Config
+
+The dispatch table is env-configured — no code change needed when adding a new Lambda:
+
+```
+LAMBDA_DISPATCH=RECOGNIZED:https://<id>.lambda-url.eu-west-1.on.aws/ivo,INGESTED:https://.../classify
+```
+
+Each entry maps a job status to a Lambda Function URL. The dispatcher sends the `job.Event` JSON payload (job_id, tenant_id, system_id, status, page_count, occurred_at) as the HTTP POST body.
+
+### How Lambda Writes Results Back
+
+PostgreSQL is bound to `127.0.0.1` on the server — Lambda cannot reach it directly. Lambda callbacks go through **job-admin-api internal endpoints**:
+
+```
+POST /api/internal/jobs/{id}/transition   — report completion, trigger next pipeline event
+POST /api/internal/jobs/{id}/fields       — write recognized/processed fields
+```
+
+These endpoints are handled by the existing `job.Service` instance inside job-admin-api. They are not exposed externally by nginx (nginx only proxies `/api/*` that does not match `/api/internal/*`, or they require an internal auth token — to be decided).
+
+MinIO (port 6781) IS reachable externally, so Lambda can read/write artifacts directly without going through a callback.
+
+### What Needs to Be Built
+
+| Component | Location | Status |
+|---|---|---|
+| Lambda dispatcher service | `lambda-dispatcher/` + `cmd/lambda-dispatcher/` | **Done** |
+| Dispatcher Dockerfile + compose entry | `Dockerfile.lambda-dispatcher` | **Done** |
+| Internal write endpoints | `admin/handler.go` | **Done** |
+| Each Lambda function | separate repo or `lambdas/{name}/` | Per module |
+
+Existing services (`ingestion`, `recognition`, `export`, `job.Service`, `publisher.go`) required **no changes**.
+
+### Architectural Rule for Lambda Modules
+
+> Lambda functions MUST NOT connect directly to PostgreSQL. All DB writes go through `job-admin-api /api/internal/*`. All DB reads that require full job data go through the same API. Direct MinIO access for binary artifacts is allowed.
+
+---
+
 ## IVO Module (Intelligent Verification Oversight)
 
-Spec completed. Components:
+Spec completed. Will be implemented as a **Lambda function** (triggered by `vividp.jobs.events.RECOGNIZED` via the lambda-dispatcher).
+
+Components:
 - **Risk Profile Store** — per-field correction rates, cross-field inconsistency patterns
 - **Attention Engine** — generates intervention manifests per job (< 200ms)
 - **Verifier Telemetry Collector** — captures operator behavior for learning
@@ -338,8 +447,10 @@ Four open questions remain before implementation begins (see conversation histor
 
 ## Modules On the Horizon
 
-- **Injection pipeline** — next to be implemented (NATS subscription → job creation)
-- **VWD module spec** — deferred from IVO session
+- **IVO** — Lambda, triggered on RECOGNIZED
+- **Classification** — Lambda, triggered on INGESTED (before recognition, if needed)
+- **Validation** — Lambda, triggered on RECOGNIZED
+- **VWD module spec** — deferred
 - **Verification Workstation UI** — complex data-dense tool; custom client scripts via sandboxed JS
 - **Legacy engine wrapping** — Win32 OCR/classification behind REST adapters (Strangler Fig)
 - **License Service** — new licensing axes: deployment tier, modules, engines, throughput, seats
@@ -370,33 +481,48 @@ Before proposing or applying any fix:
 
 ## Current Focus
 
-We are building the **Jobs Admin screen** — a monitoring and debugging UI for internal admins.
-Work is divided into three phases:
+Next up: first production deployment to the on-premise server. Then IVO Lambda.
 
-- **Phase 1:** Jobs list view (filters, bulk actions, multi-select)
-- **Phase 2:** Job detail view (Event Log mini-panel, S3 Artifacts mini-panel)
-- **Phase 3:** API wiring (replacing mock data with real endpoints)
+## Completed Work
 
-Frontend lives at `admin-ui/` (new directory, React 19 + TypeScript + Vite + Tailwind + shadcn/ui).
-Backend API will live at `cmd/job-admin-api/` (new Go entry point, 8 endpoints).
+### Jobs Admin UI (all phases done)
+- [x] Phase 1 — Jobs list view (`admin-ui/`) with filters, bulk actions, multi-select
+- [x] Phase 1 amendment — detail panel is a resizable split (drag handle; min 280px, max 800px, default 420px)
+- [x] Phase 2 — Job detail view (`admin-ui/src/components/jobs/detail/`) — Event Log + S3 Artifacts panels
+- [x] Phase 3 — API wiring (`admin/` package, `cmd/job-admin-api/main.go`, `admin-ui/src/api/jobs.ts`)
 
-## In Progress
+### Lambda Dispatcher infrastructure (branch: feature/lambda-dispatcher)
+- [x] Lambda dispatcher service — `lambda-dispatcher/` + `cmd/lambda-dispatcher/` + `Dockerfile.lambda-dispatcher`
+- [x] Internal Lambda callback endpoints — `POST /api/internal/jobs/{id}/transition` and `.../fields` in `admin/handler.go`
+- [x] All pipeline services added to `docker-compose.yml` for local dev (ingestion, recognition, export, job-admin-api)
+- [x] Vite dev proxy — `/api` → `localhost:8081` in `admin-ui/vite.config.ts`
+- [x] Integration test suite — `tests/integration/` (state transitions, single-file pipeline, folder pipeline)
 
-- [x] Phase 1 — Jobs list view (complete — `admin-ui/`)
-- [x] Phase 1 amendment — detail panel is a **resizable split** (not fixed drawer; drag handle between table and panel)
-- [x] Phase 2 — Job detail view (complete — `admin-ui/src/components/jobs/detail/`)
-- [x] Phase 3 — API wiring (complete)
+### Bug fixes (same branch)
+- [x] `job_state` JSONB corruption — `json.Marshal(nil)` → `"null"` → `object || 'null'::jsonb` converted column to array; fixed by defaulting to `{}` in `TransitionStatus` when `NewState` is nil
+- [x] Claude tool schema — `invoiceToolSchema()` was passing the full schema as `Properties`, nesting it inside itself and causing 400 from API; fixed by splitting into `invoiceToolProperties()` + `invoiceToolRequired`
+- [x] `job_transitions` FK — was `NO ACTION`, blocking job deletion; migration 005 changes it to `ON DELETE CASCADE`
+- [x] `stage` column — was written once at job creation and never updated; `StageForStatus()` now keeps it in sync on every transition. `FAILED`/`DEAD_LETTER` preserve the last known stage for debugging
+- [x] Go 1.25 in all Dockerfiles — was `golang:1.23-alpine`, mismatched `go.mod` requiring 1.25
 
 ## Decisions Made
 
+### Admin UI
 - Detail view and mini-panels are empty stubs in Phase 1 — built in Phase 2
 - Detail panel is a resizable split (drag handle between table and panel; min 280px, max 800px, default 420px)
-- Mock/static data only until Phase 3
 - Mobile layout is out of scope
 - "NATS Messages" panel renamed to "Event Log" and backed by `job_transitions` table (not raw NATS payloads)
 - Admin API is a new `cmd/job-admin-api` entry point — does not extend the ingestion service
 - No auth/authorization in v1 — network-level access control assumed
-- Bug fix: detail panel clears when filters exclude the active job (`useEffect` on `jobs` array)
-- Phase 3 API wired: `admin/` package (store + handler), `cmd/job-admin-api/main.go`, `admin-ui/src/api/jobs.ts`
 - Artifacts panel is lazy — fetches presigned URLs (15-min TTL) only on first expand via `onOpenChange` in CollapsibleSection
 - BulkConfirmDialog calls real API per-job with async/error handling; mutations invalidate `['jobs','list']` and open detail cache
+
+### Lambda Dispatcher
+- Internal endpoints (`/api/internal/*`) have no token auth — network-level isolation is the only control (nginx does not proxy `/api/internal/*` externally)
+- `LAMBDA_DISPATCH` format: `STATUS:url,STATUS:url` — `SplitN(..., 2)` preserves `https://` colons in URLs
+- Lambda dispatcher `DeliverPolicy: DeliverNewPolicy` — does not replay historical events on restart, only new ones
+
+### Integration tests
+- `TestMain` gates the entire suite on `ANTHROPIC_API_KEY` + reachable infra — skip (not fail) when not available
+- `TestJobStore_StateTransitions` is the fast DB-only smoke test (~0.1s); `TestSingleFilePipeline` and `TestFolderJobPipeline` hit the real Claude API (~10–90s each)
+- Test fixtures live at `test_input_files/{tenant_id}/{system_id}/`

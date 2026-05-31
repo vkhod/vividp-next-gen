@@ -467,6 +467,12 @@ func (w *Worker) applyMeta(ctx context.Context, jobID, bucket, metaKey string) {
 	}
 }
 
+// ProcessFile is the exported entry point used by integration tests to drive
+// the ingestion pipeline directly without going through the NATS subscriber.
+func (w *Worker) ProcessFile(ctx context.Context, f DetectedFile) error {
+	return w.processFile(ctx, f)
+}
+
 // mimeTypeFromFilename returns a MIME type based on file extension.
 func mimeTypeFromFilename(filename string) string {
 	ext := strings.ToLower(filepath.Ext(filename))
