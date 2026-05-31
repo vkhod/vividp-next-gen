@@ -92,20 +92,30 @@ func (s *Store) TransitionStatus(ctx context.Context, req TransitionRequest) err
 		return fmt.Errorf("illegal transition %s → %s for job %s", cur, req.ToStatus, req.JobID)
 	}
 
-	// Build new state JSON
-	stateJSON, err := json.Marshal(req.NewState)
-	if err != nil {
-		return fmt.Errorf("marshal new state: %w", err)
+	// Build new state JSON — use {} when NewState is nil so that
+	// job_state || 'null'::jsonb doesn't corrupt the JSONB column into an array.
+	stateJSON := []byte("{}")
+	if len(req.NewState) > 0 {
+		var err error
+		stateJSON, err = json.Marshal(req.NewState)
+		if err != nil {
+			return fmt.Errorf("marshal new state: %w", err)
+		}
 	}
 
-	// Build timing update (if station timing provided)
-	var timingUpdate string
-	var timingArgs []any
+	// Build optional SET clauses for stage and timing
+	var extraSets string
+	var extraArgs []any
+
+	if stage := StageForStatus(req.ToStatus); stage != "" {
+		extraArgs = append(extraArgs, stage)
+		extraSets += fmt.Sprintf(", stage = $%d", 4+len(extraArgs)-1)
+	}
+
 	if req.StationName != "" && req.DurationMS > 0 {
-		// Merge a single key into pipeline_timings JSONB
 		timingJSON, _ := json.Marshal(map[string]int64{req.StationName: req.DurationMS})
-		timingUpdate = ", pipeline_timings = pipeline_timings || $4::jsonb"
-		timingArgs = append(timingArgs, timingJSON)
+		extraArgs = append(extraArgs, timingJSON)
+		extraSets += fmt.Sprintf(", pipeline_timings = pipeline_timings || $%d::jsonb", 4+len(extraArgs)-1)
 	}
 
 	completedAt := (*time.Time)(nil)
@@ -121,10 +131,9 @@ func (s *Store) TransitionStatus(ctx context.Context, req TransitionRequest) err
 	}
 	defer tx.Rollback(ctx)
 
-	// Update job state — merge JSONB, never replace
-	// Args order: $1=status, $2=new_state, $3=completed_at, [$4=timing], $N=job_id (always last)
+	// Args order: $1=status, $2=new_state, $3=completed_at, [$4..]=extra, $N=job_id (always last)
 	args := []any{string(req.ToStatus), stateJSON, completedAt}
-	args = append(args, timingArgs...)
+	args = append(args, extraArgs...)
 	args = append(args, req.JobID)
 
 	_, err = tx.Exec(ctx, fmt.Sprintf(`
@@ -134,7 +143,7 @@ func (s *Store) TransitionStatus(ctx context.Context, req TransitionRequest) err
 			completed_at = COALESCE($3, completed_at)
 			%s
 		WHERE id = $%d`,
-		timingUpdate, 4+len(timingArgs),
+		extraSets, len(args),
 	), args...)
 	if err != nil {
 		return fmt.Errorf("update job: %w", err)
@@ -166,26 +175,54 @@ func (s *Store) TransitionStatus(ctx context.Context, req TransitionRequest) err
 // SELECT FOR UPDATE SKIP LOCKED ensures multiple concurrent workers
 // never pick up the same job.
 func (s *Store) ClaimJob(ctx context.Context, status Status, workerID string) (*Job, error) {
+	return s.claimJobTx(ctx, "", status, workerID)
+}
+
+// ClaimJobByID atomically claims a specific job if it is in the expected status.
+// Returns nil, nil if the job is not available (wrong status, on hold, or already claimed).
+// Used when a work message carries an explicit job ID.
+func (s *Store) ClaimJobByID(ctx context.Context, jobID string, status Status, workerID string) (*Job, error) {
+	return s.claimJobTx(ctx, jobID, status, workerID)
+}
+
+func (s *Store) claimJobTx(ctx context.Context, jobID string, status Status, workerID string) (*Job, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
 
-	row := tx.QueryRow(ctx, `
-		SELECT id, tenant_id, system_id, status, stage,
-		       source_filename, source_bucket, source_key, size_bytes,
-		       page_count, nfiles, priority,
-		       job_state, artifacts, pipeline_timings
-		FROM jobs
-		WHERE  status    = $1
-		  AND  on_hold   = FALSE
-		  AND  claimed_by IS NULL
-		ORDER BY priority DESC, created_at ASC
-		LIMIT 1
-		FOR UPDATE SKIP LOCKED`,
-		string(status),
-	)
+	var row pgx.Row
+	if jobID != "" {
+		row = tx.QueryRow(ctx, `
+			SELECT id, tenant_id, system_id, status, stage,
+			       source_filename, source_bucket, source_key, size_bytes,
+			       page_count, nfiles, priority,
+			       job_state, artifacts, pipeline_timings
+			FROM jobs
+			WHERE  id        = $1
+			  AND  status    = $2
+			  AND  on_hold   = FALSE
+			  AND  claimed_by IS NULL
+			FOR UPDATE SKIP LOCKED`,
+			jobID, string(status),
+		)
+	} else {
+		row = tx.QueryRow(ctx, `
+			SELECT id, tenant_id, system_id, status, stage,
+			       source_filename, source_bucket, source_key, size_bytes,
+			       page_count, nfiles, priority,
+			       job_state, artifacts, pipeline_timings
+			FROM jobs
+			WHERE  status    = $1
+			  AND  on_hold   = FALSE
+			  AND  claimed_by IS NULL
+			ORDER BY priority DESC, created_at ASC
+			LIMIT 1
+			FOR UPDATE SKIP LOCKED`,
+			string(status),
+		)
+	}
 
 	j, err := scanJobRow(row)
 	if err != nil {

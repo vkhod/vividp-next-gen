@@ -21,6 +21,7 @@ type Handler struct {
 	svc    *job.Service
 	minio  *minio.Client
 	bucket string
+	auth   *Auth
 	log    *slog.Logger
 }
 
@@ -32,19 +33,38 @@ func NewHandler(store *Store, svc *job.Service, cfg Config, log *slog.Logger) (*
 	if err != nil {
 		return nil, fmt.Errorf("minio client: %w", err)
 	}
-	return &Handler{store: store, svc: svc, minio: mc, bucket: cfg.JobsBucket, log: log}, nil
+	auth, err := NewAuth(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("auth: %w", err)
+	}
+	if auth == nil {
+		log.Warn("ADMIN_PASSWORD not set — admin UI is unprotected")
+	}
+	return &Handler{store: store, svc: svc, minio: mc, bucket: cfg.JobsBucket, auth: auth, log: log}, nil
 }
 
 // RegisterRoutes registers all admin routes on mux using Go 1.22 method+path patterns.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/admin/jobs", h.listJobs)
-	mux.HandleFunc("GET /api/admin/jobs/{id}", h.getJob)
-	mux.HandleFunc("GET /api/admin/jobs/{id}/transitions", h.getTransitions)
-	mux.HandleFunc("GET /api/admin/jobs/{id}/artifacts", h.getArtifacts)
-	mux.HandleFunc("GET /api/admin/jobs/{id}/fields/summary", h.getFieldsSummary)
-	mux.HandleFunc("POST /api/admin/jobs/{id}/hold", h.holdJob)
-	mux.HandleFunc("POST /api/admin/jobs/{id}/release", h.releaseJob)
-	mux.HandleFunc("DELETE /api/admin/jobs/{id}", h.deleteJob)
+	// Auth endpoints — always public.
+	mux.HandleFunc("POST /api/auth/login", h.auth.HandleLogin)
+	mux.HandleFunc("POST /api/auth/logout", h.auth.HandleLogout)
+	mux.HandleFunc("GET /api/auth/me", h.auth.HandleMe)
+
+	// Admin endpoints — protected by session cookie.
+	protect := h.auth.Require
+	mux.HandleFunc("GET /api/admin/jobs", protect(h.listJobs))
+	mux.HandleFunc("GET /api/admin/jobs/{id}", protect(h.getJob))
+	mux.HandleFunc("GET /api/admin/jobs/{id}/transitions", protect(h.getTransitions))
+	mux.HandleFunc("GET /api/admin/jobs/{id}/artifacts", protect(h.getArtifacts))
+	mux.HandleFunc("GET /api/admin/jobs/{id}/fields/summary", protect(h.getFieldsSummary))
+	mux.HandleFunc("POST /api/admin/jobs/{id}/hold", protect(h.holdJob))
+	mux.HandleFunc("POST /api/admin/jobs/{id}/release", protect(h.releaseJob))
+	mux.HandleFunc("DELETE /api/admin/jobs/{id}", protect(h.deleteJob))
+
+	// Internal endpoints — called by Lambda functions to write results back.
+	// Not proxied by nginx; reachable only from within the server network.
+	mux.HandleFunc("POST /api/internal/jobs/{id}/transition", h.internalTransition)
+	mux.HandleFunc("POST /api/internal/jobs/{id}/fields", h.internalWriteFields)
 }
 
 // CORSMiddleware adds permissive CORS headers for the Vite dev server.
@@ -230,4 +250,96 @@ func (h *Handler) deleteJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ── Internal endpoints (Lambda callbacks) ─────────────────────────────────────
+
+// internalTransition advances a job's status. Called by Lambda functions after
+// they finish processing (e.g. IVO → RECOGNIZED, Classification → CLASSIFIED).
+func (h *Handler) internalTransition(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var req struct {
+		ToStatus job.Status     `json:"to_status"`
+		WorkerID string         `json:"worker_id"`
+		Note     string         `json:"note"`
+		NewState job.StateData  `json:"new_state,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.ToStatus == "" {
+		writeError(w, http.StatusBadRequest, "to_status is required")
+		return
+	}
+
+	j, err := h.svc.Transition(r.Context(), job.TransitionRequest{
+		JobID:    id,
+		ToStatus: req.ToStatus,
+		WorkerID: req.WorkerID,
+		Note:     req.Note,
+		NewState: req.NewState,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "no rows") {
+			writeError(w, http.StatusNotFound, "job not found")
+			return
+		}
+		if strings.Contains(err.Error(), "illegal transition") {
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+		h.log.Error("internal transition", "id", id, "to", req.ToStatus, "error", err)
+		writeError(w, http.StatusInternalServerError, "transition failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": string(j.Status)})
+}
+
+// internalWriteFields stores field values written by a Lambda (e.g. Recognition,
+// Classification). Each element maps directly to a job.Field row.
+func (h *Handler) internalWriteFields(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var fields []struct {
+		PageID      *int64          `json:"page_id,omitempty"`
+		FieldName   string          `json:"field_name"`
+		FieldOrder  int             `json:"field_order"`
+		IsJobLevel  bool            `json:"is_job_level"`
+		FinalValue  *string         `json:"final_value,omitempty"`
+		FieldState  *string         `json:"field_state,omitempty"`
+		ValueSource *string         `json:"value_source,omitempty"`
+		Confidence  *int            `json:"confidence,omitempty"`
+		Recognition json.RawMessage `json:"recognition,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&fields); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	for _, f := range fields {
+		if f.FieldName == "" {
+			writeError(w, http.StatusBadRequest, "field_name is required for every field")
+			return
+		}
+		if err := h.svc.CreateField(r.Context(), &job.Field{
+			JobID:       id,
+			PageID:      f.PageID,
+			FieldName:   f.FieldName,
+			FieldOrder:  f.FieldOrder,
+			IsJobLevel:  f.IsJobLevel,
+			FinalValue:  f.FinalValue,
+			FieldState:  f.FieldState,
+			ValueSource: f.ValueSource,
+			Confidence:  f.Confidence,
+			Recognition: f.Recognition,
+		}); err != nil {
+			h.log.Error("write field", "id", id, "field", f.FieldName, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to write field: "+f.FieldName)
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]int{"written": len(fields)})
 }

@@ -96,6 +96,146 @@ services:
         exit 0
       "
 
+  # ── Conversion Service ────────────────────────────────────────
+  conversion:
+    build:
+      context: .
+      dockerfile: Dockerfile.conversion
+    container_name: vividp_conversion
+    environment:
+      STORAGE_ENDPOINT: minio:9000
+      STORAGE_ACCESS_KEY: vividp
+      STORAGE_SECRET_KEY: vividp_dev
+      STORAGE_SECURE: "false"
+      JOBS_BUCKET: jobs
+      LISTEN_ADDR: ":8082"
+      LOG_LEVEL: info
+    ports:
+      - "8082:8082"   # host:container — integration tests reach it at localhost:8082
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Ingestion Service ────────────────────────────────────────
+  ingestion:
+    build:
+      context: .
+      dockerfile: Dockerfile.ingestion
+    container_name: vividp_ingestion
+    environment:
+      DATABASE_URL: postgres://vividp:vividp_dev@postgres:5432/vividp
+      NATS_URL: nats://nats:4222
+      STORAGE_ENDPOINT: minio:9000
+      STORAGE_ACCESS_KEY: vividp
+      STORAGE_SECRET_KEY: vividp_dev
+      STORAGE_SECURE: "false"
+      INPUT_BUCKET: input
+      JOBS_BUCKET: jobs
+      CONVERSION_URL: http://conversion:8082
+      LOG_LEVEL: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      conversion:
+        condition: service_started
+    restart: unless-stopped
+
+  # ── Recognition Service ───────────────────────────────────────
+  recognition:
+    build:
+      context: .
+      dockerfile: Dockerfile.recognition
+    container_name: vividp_recognition
+    environment:
+      DATABASE_URL: postgres://vividp:vividp_dev@postgres:5432/vividp
+      NATS_URL: nats://nats:4222
+      STORAGE_ENDPOINT: minio:9000
+      STORAGE_ACCESS_KEY: vividp
+      STORAGE_SECRET_KEY: vividp_dev
+      STORAGE_SECURE: "false"
+      JOBS_BUCKET: jobs
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      LOG_LEVEL: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Export Service ────────────────────────────────────────────
+  export:
+    build:
+      context: .
+      dockerfile: Dockerfile.export
+    container_name: vividp_export
+    environment:
+      DATABASE_URL: postgres://vividp:vividp_dev@postgres:5432/vividp
+      NATS_URL: nats://nats:4222
+      STORAGE_ENDPOINT: minio:9000
+      STORAGE_ACCESS_KEY: vividp
+      STORAGE_SECRET_KEY: vividp_dev
+      STORAGE_SECURE: "false"
+      JOBS_BUCKET: jobs
+      LOG_LEVEL: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Job Admin API ─────────────────────────────────────────────
+  job-admin-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.job-admin-api
+    container_name: vividp_job_admin_api
+    environment:
+      DATABASE_URL: postgres://vividp:vividp_dev@postgres:5432/vividp
+      NATS_URL: nats://nats:4222
+      STORAGE_ENDPOINT: minio:9000
+      STORAGE_ACCESS_KEY: vividp
+      STORAGE_SECRET_KEY: vividp_dev
+      STORAGE_SECURE: "false"
+      JOBS_BUCKET: jobs
+      ADMIN_API_ADDR: ":8081"
+      LOG_LEVEL: info
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Lambda Dispatcher ─────────────────────────────────────────
+  lambda-dispatcher:
+    build:
+      context: .
+      dockerfile: Dockerfile.lambda-dispatcher
+    container_name: vividp_lambda_dispatcher
+    environment:
+      NATS_URL: nats://nats:4222
+      LOG_LEVEL: info
+      # LAMBDA_DISPATCH: "INGESTED:https://<id>.lambda-url.eu-west-1.on.aws/classify,RECOGNIZED:https://<id>.lambda-url.eu-west-1.on.aws/ivo"
+      LAMBDA_DISPATCH: ""
+      LAMBDA_HTTP_TIMEOUT: 30s
+    depends_on:
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   nats_data:

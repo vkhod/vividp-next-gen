@@ -52,44 +52,43 @@ type InvoiceLineItem struct {
 	Amount      string `json:"amount,omitempty"`
 }
 
-// invoiceToolSchema returns the JSON schema for the tool input.
-// This is the schema Claude uses to structure its output.
-func invoiceToolSchema() map[string]any {
+// invoiceToolRequired lists the fields Claude must always return.
+var invoiceToolRequired = []string{"document_type", "confidence"}
+
+// invoiceToolProperties returns only the properties map for ToolInputSchemaParam.
+// The top-level type ("object") and required array are set separately by the caller.
+func invoiceToolProperties() map[string]any {
 	return map[string]any{
-		"type": "object",
-		"required": []string{"document_type", "confidence"},
-		"properties": map[string]any{
-			"document_type":    map[string]any{"type": "string", "description": "Document classification: invoice, receipt, contract, statement, other"},
-			"confidence":       map[string]any{"type": "integer", "minimum": 0, "maximum": 100, "description": "Classification confidence 0-100"},
-			"invoice_number":   map[string]any{"type": "string"},
-			"invoice_date":     map[string]any{"type": "string"},
-			"due_date":         map[string]any{"type": "string"},
-			"purchase_order":   map[string]any{"type": "string"},
-			"vendor_name":      map[string]any{"type": "string"},
-			"vendor_address":   map[string]any{"type": "string"},
-			"vendor_vat":       map[string]any{"type": "string"},
-			"customer_name":    map[string]any{"type": "string"},
-			"customer_address": map[string]any{"type": "string"},
-			"customer_vat":     map[string]any{"type": "string"},
-			"subtotal":         map[string]any{"type": "string"},
-			"tax_amount":       map[string]any{"type": "string"},
-			"tax_rate":         map[string]any{"type": "string"},
-			"total_amount":     map[string]any{"type": "string"},
-			"currency":         map[string]any{"type": "string"},
-			"bank_account":     map[string]any{"type": "string"},
-			"iban":             map[string]any{"type": "string"},
-			"bic":              map[string]any{"type": "string"},
-			"payment_terms":    map[string]any{"type": "string"},
-			"line_items": map[string]any{
-				"type": "array",
-				"items": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"description": map[string]any{"type": "string"},
-						"quantity":    map[string]any{"type": "string"},
-						"unit_price":  map[string]any{"type": "string"},
-						"amount":      map[string]any{"type": "string"},
-					},
+		"document_type":    map[string]any{"type": "string", "description": "Document classification: invoice, receipt, contract, statement, other"},
+		"confidence":       map[string]any{"type": "integer", "minimum": 0, "maximum": 100, "description": "Classification confidence 0-100"},
+		"invoice_number":   map[string]any{"type": "string"},
+		"invoice_date":     map[string]any{"type": "string"},
+		"due_date":         map[string]any{"type": "string"},
+		"purchase_order":   map[string]any{"type": "string"},
+		"vendor_name":      map[string]any{"type": "string"},
+		"vendor_address":   map[string]any{"type": "string"},
+		"vendor_vat":       map[string]any{"type": "string"},
+		"customer_name":    map[string]any{"type": "string"},
+		"customer_address": map[string]any{"type": "string"},
+		"customer_vat":     map[string]any{"type": "string"},
+		"subtotal":         map[string]any{"type": "string"},
+		"tax_amount":       map[string]any{"type": "string"},
+		"tax_rate":         map[string]any{"type": "string"},
+		"total_amount":     map[string]any{"type": "string"},
+		"currency":         map[string]any{"type": "string"},
+		"bank_account":     map[string]any{"type": "string"},
+		"iban":             map[string]any{"type": "string"},
+		"bic":              map[string]any{"type": "string"},
+		"payment_terms":    map[string]any{"type": "string"},
+		"line_items": map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"description": map[string]any{"type": "string"},
+					"quantity":    map[string]any{"type": "string"},
+					"unit_price":  map[string]any{"type": "string"},
+					"amount":      map[string]any{"type": "string"},
 				},
 			},
 		},

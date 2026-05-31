@@ -121,6 +121,9 @@ services:
       STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       JOBS_BUCKET: jobs
       ADMIN_API_ADDR: ":8080"
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     depends_on:
       postgres:

@@ -86,7 +86,13 @@ func (w *Worker) handleMessage(ctx context.Context, msg jetstream.Msg) {
 }
 
 func (w *Worker) processJob(ctx context.Context, jobID string) error {
-	j, err := w.svc.ClaimJob(ctx, job.StatusIngested, w.id)
+	var j *job.Job
+	var err error
+	if jobID != "" {
+		j, err = w.svc.ClaimJobByID(ctx, jobID, job.StatusIngested, w.id)
+	} else {
+		j, err = w.svc.ClaimJob(ctx, job.StatusIngested, w.id)
+	}
 	if err != nil {
 		return fmt.Errorf("claim job: %w", err)
 	}
@@ -184,7 +190,10 @@ func (w *Worker) callClaude(ctx context.Context, blocks []anthropic.ContentBlock
 		MaxTokens: 4096,
 		Tools: []anthropic.ToolUnionParam{
 			anthropic.ToolUnionParamOfTool(
-				anthropic.ToolInputSchemaParam{Properties: invoiceToolSchema()},
+				anthropic.ToolInputSchemaParam{
+					Properties: invoiceToolProperties(),
+					Required:   invoiceToolRequired,
+				},
 				invoiceToolName,
 			),
 		},
@@ -296,4 +305,10 @@ func (w *Worker) failJob(ctx context.Context, jobID, msg string) error {
 
 func (w *Worker) failJobErr(ctx context.Context, jobID string, err error) error {
 	return w.failJob(ctx, jobID, err.Error())
+}
+
+// ProcessJob is the exported entry point used by integration tests to drive
+// the recognition pipeline directly without going through the NATS subscriber.
+func (w *Worker) ProcessJob(ctx context.Context, jobID string) error {
+	return w.processJob(ctx, jobID)
 }

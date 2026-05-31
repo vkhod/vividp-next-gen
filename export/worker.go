@@ -98,8 +98,13 @@ func (w *Worker) handleMessage(ctx context.Context, msg jetstream.Msg) {
 }
 
 func (w *Worker) processJob(ctx context.Context, jobID string) error {
-	// Claim the job — competing workers use SELECT FOR UPDATE SKIP LOCKED
-	j, err := w.svc.ClaimJob(ctx, job.StatusRecognized, w.id)
+	var j *job.Job
+	var err error
+	if jobID != "" {
+		j, err = w.svc.ClaimJobByID(ctx, jobID, job.StatusRecognized, w.id)
+	} else {
+		j, err = w.svc.ClaimJob(ctx, job.StatusRecognized, w.id)
+	}
 	if err != nil {
 		return fmt.Errorf("claim job: %w", err)
 	}
@@ -220,4 +225,10 @@ func (w *Worker) failJob(ctx context.Context, jobID string, cause error) error {
 		Note:     msg,
 	})
 	return fmt.Errorf("export failed: %w", cause)
+}
+
+// ProcessJob is the exported entry point used by integration tests to drive
+// the export pipeline directly without going through the NATS subscriber.
+func (w *Worker) ProcessJob(ctx context.Context, jobID string) error {
+	return w.processJob(ctx, jobID)
 }

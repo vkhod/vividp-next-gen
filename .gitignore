@@ -30,3 +30,4 @@ logs/
 
 # Claude Code local settings (personal, not shared)
 .claude/
+test_input_files/
