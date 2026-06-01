@@ -141,6 +141,11 @@ func (s *Service) CreateField(ctx context.Context, f *Field) error {
 	return s.store.CreateField(ctx, f)
 }
 
+// SetJobAlias sets the job_alias column from sidecar metadata.
+func (s *Service) SetJobAlias(ctx context.Context, jobID, alias string) error {
+	return s.store.SetJobAlias(ctx, jobID, alias)
+}
+
 // MergeJobState merges metadata into job_state without a status transition.
 func (s *Service) MergeJobState(ctx context.Context, jobID string, data StateData) error {
 	return s.store.MergeJobState(ctx, jobID, data)

@@ -502,6 +502,15 @@ func scanFields(rows pgx.Rows) ([]Field, error) {
 	return fields, rows.Err()
 }
 
+// SetJobAlias sets the job_alias column — used when a _READY.json or .meta sidecar supplies one.
+func (s *Store) SetJobAlias(ctx context.Context, jobID, alias string) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE jobs SET job_alias = $1, updated_at = now() WHERE id = $2`,
+		alias, jobID,
+	)
+	return err
+}
+
 // MergeJobState patches job_state JSONB without changing status or writing an audit row.
 // Use this for metadata that enriches the job but is not a state transition.
 func (s *Store) MergeJobState(ctx context.Context, jobID string, data StateData) error {
