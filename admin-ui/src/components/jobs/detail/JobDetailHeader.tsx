@@ -17,9 +17,7 @@ export function JobDetailHeader({ job, onClose, onAction }: JobDetailHeaderProps
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <h2 className="font-semibold truncate">
-            {job.job_alias ?? (
-              <span className="text-muted-foreground font-normal italic">no alias</span>
-            )}
+            {job.job_alias ?? job.source_filename}
           </h2>
           <p className="text-xs text-muted-foreground font-mono mt-0.5 truncate">
             {job.tenant_name} › {job.system_name}

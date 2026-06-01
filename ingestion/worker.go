@@ -257,23 +257,10 @@ func (w *Worker) processFolderJob(ctx context.Context, f DetectedFile) error {
 
 	// ── Step 1b: Apply meta from _READY.json ─────────────────────────────────
 	if f.MetaContent != "" {
-		if payload, err := parseMeta([]byte(f.MetaContent)); err == nil && payload != nil {
-			state := job.StateData{}
-			if payload.JobAlias != nil {
-				state["job_alias"] = *payload.JobAlias
-			}
-			if payload.Priority != nil {
-				state["priority"] = *payload.Priority
-			}
-			if payload.UserData != nil {
-				state["user_data"] = *payload.UserData
-			}
-			if len(payload.CustomFields) > 0 {
-				state["meta_fields"] = payload.CustomFields
-			}
-			if len(state) > 0 {
-				w.svc.MergeJobState(ctx, j.ID, state)
-			}
+		if payload, err := parseMeta([]byte(f.MetaContent)); err != nil {
+			w.log.Warn("could not parse _READY.json meta — skipping", "job_id", j.ID, "error", err)
+		} else if payload != nil {
+			w.applyMetaPayload(ctx, j.ID, payload)
 		}
 	}
 
@@ -445,16 +432,25 @@ func (w *Worker) applyMeta(ctx context.Context, jobID, bucket, metaKey string) {
 	})
 
 	payload, err := parseMeta(data)
-	if err != nil || payload == nil {
+	if err != nil {
+		w.log.Warn("could not parse meta sidecar — skipping", "job_id", jobID, "key", metaKey, "error", err)
 		return
 	}
-
-	state := job.StateData{}
-	if payload.JobAlias != nil {
-		state["job_alias"] = *payload.JobAlias
+	if payload != nil {
+		w.applyMetaPayload(ctx, jobID, payload)
 	}
+}
+
+// applyMetaPayload writes parsed meta to the correct job columns and JSONB state.
+func (w *Worker) applyMetaPayload(ctx context.Context, jobID string, payload *MetaPayload) {
+	if payload.JobAlias != nil {
+		if err := w.svc.SetJobAlias(ctx, jobID, *payload.JobAlias); err != nil {
+			w.log.Warn("could not set job_alias", "job_id", jobID, "error", err)
+		}
+	}
+	state := job.StateData{}
 	if payload.Priority != nil {
-		state["priority"] = *payload.Priority
+		state["priority"] = int(*payload.Priority)
 	}
 	if payload.UserData != nil {
 		state["user_data"] = *payload.UserData

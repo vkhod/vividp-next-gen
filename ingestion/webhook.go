@@ -227,8 +227,8 @@ func extractRouting(key, defaultTenantID, defaultSystemID string) (tenantID, sys
 
 // isSignalFile reports whether the key's base name is _READY or _READY.json.
 func isSignalFile(key string) bool {
-	base := filepath.Base(key)
-	return base == "_READY" || base == "_READY.json"
+	base := strings.ToLower(filepath.Base(key))
+	return base == "_ready" || base == "_ready.json"
 }
 
 // folderPrefix returns the path up to and including the subfolder name,
@@ -236,10 +236,7 @@ func isSignalFile(key string) bool {
 // Returns "" if the file sits directly under input/ (not in a subfolder).
 func folderPrefix(key string) string {
 	parts := strings.Split(key, "/")
-	// Need at least: tenants / tenant / system / input / folder / file  (6 parts)
-	if len(parts) < 6 {
-		return ""
-	}
+
 	// Find "input" segment — folder must be the segment after it
 	for i, p := range parts {
 		if p == "input" && i+2 < len(parts) {
@@ -252,9 +249,16 @@ func folderPrefix(key string) string {
 // shouldIgnore returns true for keys that are not real documents.
 func shouldIgnore(key string) bool {
 	base := strings.ToLower(filepath.Base(key))
-	// Ignore hidden files, temp files, and non-document formats
-	if strings.HasPrefix(base, ".") || strings.HasSuffix(base, ".tmp") {
+	if strings.HasPrefix(base, ".") || strings.HasSuffix(base, ".tmp") ||
+		strings.HasSuffix(base, ".meta") || strings.HasSuffix(base, ".json") {
 		return true
 	}
-	return false
+	// Only process files routed through an input/ channel
+	parts := strings.Split(key, "/")
+	for i, p := range parts {
+		if p == "input" && i < len(parts)-1 {
+			return false
+		}
+	}
+	return true
 }
